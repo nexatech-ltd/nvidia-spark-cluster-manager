@@ -1,0 +1,3 @@
+---
+- name: restart_slurm
+  ansible.builtin.shell: systemctl restart slurmctld || true; systemctl restart slurmd

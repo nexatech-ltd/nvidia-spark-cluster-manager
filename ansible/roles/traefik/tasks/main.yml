@@ -1,0 +1,56 @@
+---
+- name: Promote worker nodes to managers (required for Traefik swarm mode on all nodes)
+  ansible.builtin.command: docker node promote {{ item }}
+  loop: "{{ groups['workers'] | default([]) }}"
+  when: "'managers' in group_names"
+  failed_when: false
+  changed_when: false
+
+- name: Create traefik-public overlay network
+  ansible.builtin.command: >
+    docker network create
+    --driver overlay
+    --attachable
+    --subnet 10.10.20.0/24
+    traefik-public
+  register: net_create
+  failed_when: net_create.rc != 0 and 'already exists' not in net_create.stderr
+  changed_when: net_create.rc == 0
+  when: "'managers' in group_names"
+
+- name: Create Traefik directories on all nodes
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/traefik
+    - /opt/traefik/certs
+
+- name: Deploy Traefik static config on all nodes
+  ansible.builtin.template:
+    src: traefik.yml.j2
+    dest: /opt/traefik/traefik.yml
+    mode: "0644"
+
+- name: Deploy Traefik stack file
+  ansible.builtin.template:
+    src: traefik-stack.yml.j2
+    dest: /opt/traefik/docker-compose.yml
+    mode: "0644"
+  when: "'managers' in group_names"
+
+- name: Deploy Traefik stack
+  ansible.builtin.command: docker stack deploy -c /opt/traefik/docker-compose.yml traefik
+  when: "'managers' in group_names"
+  changed_when: true
+
+- name: Wait for Traefik to start
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:8080/ping"
+    status_code: 200
+  register: health
+  retries: 12
+  delay: 5
+  until: health.status == 200
+  ignore_errors: true

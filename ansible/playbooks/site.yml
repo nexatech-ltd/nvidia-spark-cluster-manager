@@ -1,0 +1,45 @@
+---
+- name: Base system configuration
+  hosts: all
+  roles:
+    - common
+
+- name: Network bonding and bridges
+  hosts: all
+  roles:
+    - networking
+
+- name: NFS cross-mounts
+  hosts: all
+  roles:
+    - nfs
+
+- name: Docker Swarm cluster
+  hosts: all
+  roles:
+    - docker_swarm
+
+- name: KVM hypervisor
+  hosts: all
+  roles:
+    - kvm
+
+- name: Slurm workload manager
+  hosts: all
+  roles:
+    - slurm
+
+- name: NCCL communication tests
+  hosts: managers
+  roles:
+    - nccl
+
+- name: Traefik ingress load balancer
+  hosts: all
+  roles:
+    - traefik
+
+- name: Spark Manager UI
+  hosts: managers
+  roles:
+    - spark_manager

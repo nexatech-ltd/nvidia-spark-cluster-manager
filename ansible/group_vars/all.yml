@@ -1,0 +1,14 @@
+cx7_interfaces:
+  - enP2p1s0f0np0
+  - enP2p1s0f1np1
+
+bond_name: bond0
+nfs_threads: 32
+nfs_opts: "rw,async,no_subtree_check,no_root_squash"
+
+bridge_names:
+  - br-containers
+  - br-vms
+
+slurm_partition_name: gpu
+data_dir: /data

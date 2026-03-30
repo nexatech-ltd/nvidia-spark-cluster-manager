@@ -1,0 +1,52 @@
+---
+- name: Check if swarm is active
+  ansible.builtin.shell: docker info --format '{{ "{{" }} .Swarm.LocalNodeState {{ "}}" }}'
+  register: swarm_status
+  ignore_errors: true
+  changed_when: false
+
+- name: Initialise swarm on manager
+  ansible.builtin.command: docker swarm init --advertise-addr {{ cx7_ip }}
+  register: init_result
+  when: "'managers' in group_names and swarm_status.stdout != 'active'"
+
+- name: Get worker join token
+  ansible.builtin.command: docker swarm join-token -q worker
+  register: join_token
+  changed_when: false
+  when: "'managers' in group_names"
+
+- name: Join swarm on workers
+  ansible.builtin.command: >
+    docker swarm join
+    --token {{ hostvars[groups['managers'][0]].join_token.stdout }}
+    {{ hostvars[groups['managers'][0]].cx7_ip }}:2377
+  when: "'workers' in group_names and swarm_status.stdout != 'active'"
+
+- name: Configure NVIDIA runtime as default
+  ansible.builtin.copy:
+    content: |
+      {
+        "default-runtime": "nvidia",
+        "runtimes": {
+          "nvidia": {
+            "path": "nvidia-container-runtime",
+            "runtimeArgs": []
+          }
+        }
+      }
+    dest: /etc/docker/daemon.json
+    mode: "0644"
+  notify: restart_docker
+
+- name: Promote all nodes to managers (needed for Traefik global service)
+  ansible.builtin.command: docker node promote {{ item }}
+  loop: "{{ groups['workers'] | default([]) }}"
+  when: "'managers' in group_names"
+  failed_when: false
+  changed_when: false
+
+- name: Verify swarm nodes
+  ansible.builtin.command: docker node ls
+  changed_when: false
+  when: "'managers' in group_names"

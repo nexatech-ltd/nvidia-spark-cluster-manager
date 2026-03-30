@@ -1,0 +1,5 @@
+---
+- name: Traefik ingress load balancer
+  hosts: all
+  roles:
+    - traefik

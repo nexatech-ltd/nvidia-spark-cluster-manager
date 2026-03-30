@@ -1,0 +1,33 @@
+---
+- name: Deploy netplan CX7 bond config
+  ansible.builtin.template:
+    src: 40-cx7.yaml.j2
+    dest: /etc/netplan/40-cx7.yaml
+    mode: "0600"
+  notify: netplan_apply
+
+- name: Create bridge interfaces
+  ansible.builtin.command: ip link add name {{ item }} type bridge
+  loop: "{{ bridge_names }}"
+  failed_when: false
+  changed_when: false
+
+- name: Set bridge interfaces up
+  ansible.builtin.command: ip link set {{ item }} up
+  loop: "{{ bridge_names }}"
+  changed_when: false
+
+- name: Apply netplan now
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for bond to come up
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Verify inter-node CX7 connectivity
+  ansible.builtin.command: >
+    ping -c 3 {{ hostvars[item]['cx7_ip'] }}
+  loop: "{{ groups['all'] | difference([inventory_hostname]) }}"
+  when: groups['all'] | length > 1
+  ignore_errors: true
+  changed_when: false

@@ -1,0 +1,52 @@
+---
+- name: Install NFS packages
+  ansible.builtin.apt:
+    name:
+      - nfs-kernel-server
+      - nfs-common
+    state: present
+
+- name: Create data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ nfs_export_dir }}"
+    - "{{ nfs_mount_to }}"
+
+- name: Deploy NFS exports
+  ansible.builtin.template:
+    src: exports.j2
+    dest: /etc/exports
+    mode: "0644"
+- name: Configure NFS threads
+  ansible.builtin.lineinfile:
+    path: /etc/nfs.conf
+    regexp: '^threads='
+    line: "threads={{ nfs_threads }}"
+    insertafter: '^\[nfsd\]'
+
+- name: Restart nfs-kernel-server
+  ansible.builtin.systemd:
+    name: nfs-kernel-server
+    state: restarted
+
+- name: Re-export all filesystems
+  ansible.builtin.command: exportfs -ra
+  changed_when: false
+
+- name: Add fstab entry for cross-mount
+  ansible.builtin.mount:
+    src: "{{ nfs_mount_from }}"
+    path: "{{ nfs_mount_to }}"
+    fstype: nfs4
+    opts: "defaults,_netdev,auto"
+    dump: "0"
+    passno: "0"
+    state: present
+
+- name: Mount all filesystems
+  ansible.builtin.command: mount -a
+  ignore_errors: true
+  changed_when: false

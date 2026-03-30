@@ -1,0 +1,18 @@
+network:
+  version: 2
+  ethernets:
+{% for iface in cx7_interfaces %}
+    {{ iface }}:
+      dhcp4: false
+{% endfor %}
+  bonds:
+    {{ bond_name }}:
+      interfaces:
+{% for iface in cx7_interfaces %}
+        - {{ iface }}
+{% endfor %}
+      addresses:
+        - {{ cx7_ip }}/30
+      mtu: 9000
+      parameters:
+        mode: {{ cx7_bond_mode }}

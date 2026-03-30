@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  spark-manager:
+    image: spark-manager:latest
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8443:8443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      - /data:/data
+      - /etc/slurm:/etc/slurm:ro
+      - /var/lib/libvirt/isos:/var/lib/libvirt/isos
+      - /var/lib/libvirt/images:/var/lib/libvirt/images
+      - ~/.ssh:/root/.ssh:ro
+    environment:
+      - SPARK_MANAGER_SECRET_KEY=${SECRET_KEY:-changeme-in-production}
+      - SPARK_MANAGER_NODE1_IP=192.168.100.10
+      - SPARK_MANAGER_NODE2_IP=192.168.100.11
+      - SPARK_MANAGER_SSH_USER=nvidia
+    restart: unless-stopped
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+    networks:
+      - default
+
+networks:
+  default:
+    driver: overlay
+    attachable: true

@@ -1,0 +1,5 @@
+---
+- name: Spark Manager UI
+  hosts: managers
+  roles:
+    - spark_manager

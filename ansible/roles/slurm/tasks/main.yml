@@ -1,0 +1,108 @@
+---
+- name: Install Slurm
+  ansible.builtin.apt:
+    name: slurm-wlm
+    state: present
+
+- name: Install MUNGE
+  ansible.builtin.apt:
+    name: munge
+    state: present
+
+- name: Generate MUNGE key on controller
+  ansible.builtin.shell: dd if=/dev/urandom bs=1 count=1024 > /etc/munge/munge.key
+  args:
+    creates: /etc/munge/munge.key
+  when: "'managers' in group_names"
+
+- name: Set MUNGE key permissions
+  ansible.builtin.file:
+    path: /etc/munge/munge.key
+    owner: munge
+    group: munge
+    mode: "0400"
+  when: "'managers' in group_names"
+
+- name: Fetch MUNGE key from controller
+  ansible.builtin.fetch:
+    src: /etc/munge/munge.key
+    dest: /tmp/munge.key
+    flat: true
+  when: "'managers' in group_names"
+
+- name: Distribute MUNGE key to workers
+  ansible.builtin.copy:
+    src: /tmp/munge.key
+    dest: /etc/munge/munge.key
+    owner: munge
+    group: munge
+    mode: "0400"
+  when: "'workers' in group_names"
+
+- name: Enable and start MUNGE
+  ansible.builtin.systemd:
+    name: munge
+    enabled: true
+    state: restarted
+
+- name: Create Slurm spool directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: slurm
+    group: slurm
+    mode: "0755"
+  loop:
+    - /var/spool/slurmctld
+    - /var/spool/slurmd
+    - /var/log/slurm
+
+- name: Deploy slurm.conf
+  ansible.builtin.template:
+    src: slurm.conf.j2
+    dest: /etc/slurm/slurm.conf
+    mode: "0644"
+  notify: restart_slurm
+
+- name: Deploy gres.conf
+  ansible.builtin.copy:
+    content: "Name=gpu Type=blackwell File=/dev/nvidia0\n"
+    dest: /etc/slurm/gres.conf
+    mode: "0644"
+  notify: restart_slurm
+
+- name: Enable and start slurmctld on controller
+  ansible.builtin.systemd:
+    name: slurmctld
+    enabled: true
+    state: started
+  when: "'managers' in group_names"
+
+- name: Enable and start slurmd
+  ansible.builtin.systemd:
+    name: slurmd
+    enabled: true
+    state: started
+
+- name: Install Enroot
+  ansible.builtin.shell: |
+    if ! command -v enroot &>/dev/null; then
+      curl -fSsL -o /tmp/enroot.deb https://github.com/NVIDIA/enroot/releases/download/v3.5.0/enroot_3.5.0-1_arm64.deb
+      curl -fSsL -o /tmp/enroot-caps.deb https://github.com/NVIDIA/enroot/releases/download/v3.5.0/enroot+caps_3.5.0-1_arm64.deb
+      apt-get install -y /tmp/enroot.deb /tmp/enroot-caps.deb
+    fi
+  ignore_errors: true
+
+- name: Install Pyxis
+  ansible.builtin.shell: |
+    if [ ! -d /opt/pyxis ]; then
+      git clone https://github.com/NVIDIA/pyxis.git /opt/pyxis
+    fi
+    cd /opt/pyxis && make && make install
+  ignore_errors: true
+
+- name: Verify Slurm cluster
+  ansible.builtin.command: sinfo
+  changed_when: false
+  when: "'managers' in group_names"
+  ignore_errors: true

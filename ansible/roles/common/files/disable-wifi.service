@@ -1,0 +1,10 @@
+[Unit]
+Description=Disable WiFi permanently
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/rfkill block wifi
+
+[Install]
+WantedBy=multi-user.target

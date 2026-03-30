@@ -1,0 +1,61 @@
+---
+- name: Install KVM packages
+  ansible.builtin.apt:
+    name:
+      - qemu-kvm
+      - libvirt-daemon-system
+      - libvirt-clients
+      - virtinst
+      - ovmf
+    state: present
+
+- name: Add user to libvirt and kvm groups
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    groups: libvirt,kvm
+    append: true
+
+- name: Enable and start libvirtd
+  ansible.builtin.systemd:
+    name: libvirtd
+    enabled: true
+    state: started
+
+- name: Create ISO directory
+  ansible.builtin.file:
+    path: /var/lib/libvirt/isos
+    state: directory
+    mode: "0755"
+
+- name: Define default storage pool
+  ansible.builtin.command: virsh pool-define-as default dir --target /var/lib/libvirt/images
+  ignore_errors: true
+
+- name: Start and autostart default pool
+  ansible.builtin.shell: virsh pool-start default && virsh pool-autostart default
+  ignore_errors: true
+
+- name: Define ISO storage pool
+  ansible.builtin.command: virsh pool-define-as isos dir --target /var/lib/libvirt/isos
+  ignore_errors: true
+
+- name: Start and autostart ISO pool
+  ansible.builtin.shell: virsh pool-start isos && virsh pool-autostart isos
+  ignore_errors: true
+
+- name: Deploy libvirt bridge network XML
+  ansible.builtin.template:
+    src: bridge-net.xml.j2
+    dest: "/tmp/libvirt-net-{{ item }}.xml"
+    mode: "0644"
+  loop: "{{ bridge_names }}"
+
+- name: Define libvirt bridge networks
+  ansible.builtin.command: virsh net-define /tmp/libvirt-net-{{ item }}.xml
+  loop: "{{ bridge_names }}"
+  ignore_errors: true
+
+- name: Start and autostart libvirt bridge networks
+  ansible.builtin.shell: virsh net-start {{ item }} && virsh net-autostart {{ item }}
+  loop: "{{ bridge_names }}"
+  ignore_errors: true

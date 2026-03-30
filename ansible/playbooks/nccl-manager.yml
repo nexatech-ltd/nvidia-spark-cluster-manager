@@ -1,0 +1,10 @@
+---
+- name: NCCL communication tests
+  hosts: managers
+  roles:
+    - nccl
+
+- name: Spark Manager UI
+  hosts: managers
+  roles:
+    - spark_manager

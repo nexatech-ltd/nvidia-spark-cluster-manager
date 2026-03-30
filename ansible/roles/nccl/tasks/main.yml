@@ -1,0 +1,50 @@
+---
+- name: Install build dependencies
+  ansible.builtin.apt:
+    name:
+      - build-essential
+      - cmake
+      - libnccl-dev
+      - libnccl2
+      - openmpi-bin
+      - libopenmpi-dev
+    state: present
+
+- name: Clone nccl-tests
+  ansible.builtin.git:
+    repo: https://github.com/NVIDIA/nccl-tests.git
+    dest: /opt/nccl-tests
+    version: master
+    update: false
+
+- name: Clean previous build artifacts
+  ansible.builtin.shell: make -C /opt/nccl-tests clean
+  ignore_errors: true
+
+- name: Build nccl-tests
+  ansible.builtin.shell: >
+    export PATH=/usr/local/cuda/bin:$PATH &&
+    make -C /opt/nccl-tests MPI=1
+    CUDA_HOME=/usr/local/cuda
+    NCCL_HOME=/usr
+    MPI_HOME=/usr/lib/aarch64-linux-gnu/openmpi
+  args:
+    creates: /opt/nccl-tests/build/all_reduce_perf
+  ignore_errors: true
+
+- name: Run all_reduce_perf across both nodes
+  ansible.builtin.shell: >
+    export PATH=/usr/local/cuda/bin:$PATH &&
+    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH &&
+    mpirun --allow-run-as-root -np 2
+    -H spark-1-cx7:1,spark-2-cx7:1
+    -x NCCL_SOCKET_IFNAME=bond0
+    -x LD_LIBRARY_PATH
+    /opt/nccl-tests/build/all_reduce_perf -b 8 -e 256M -f 2 -g 1
+  register: nccl_result
+  ignore_errors: true
+  when: "'managers' in group_names"
+
+- name: Print NCCL test results
+  ansible.builtin.debug:
+    msg: "{{ nccl_result.stdout_lines | default(['NCCL test not run or skipped']) }}"

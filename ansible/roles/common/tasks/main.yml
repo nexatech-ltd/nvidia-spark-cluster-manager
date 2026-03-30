@@ -1,0 +1,94 @@
+---
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ desired_hostname }}"
+
+- name: Update /etc/hosts with both nodes
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} SPARK CLUSTER"
+    block: |
+      {{ hostvars['spark-1'].ansible_host }}  spark-1
+      {{ hostvars['spark-2'].ansible_host }}  spark-2
+      {{ hostvars['spark-1'].cx7_ip }}  spark-1-cx7
+      {{ hostvars['spark-2'].cx7_ip }}  spark-2-cx7
+
+- name: Add user to docker group
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: true
+
+- name: Fix NVIDIA repo GPG key
+  ansible.builtin.shell: apt-key adv --fetch-keys https://repo.download.nvidia.com/baseos/GPG-KEY-dgx-cosmos-ece
+  ignore_errors: true
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+  retries: 3
+  delay: 10
+  register: apt_update
+  until: apt_update is success
+
+- name: Full dist-upgrade
+  ansible.builtin.apt:
+    upgrade: dist
+    autoremove: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  register: dist_upgrade
+
+- name: Reboot after dist-upgrade
+  ansible.builtin.reboot:
+  when: dist_upgrade.changed
+
+- name: Refresh firmware metadata
+  ansible.builtin.shell: fwupdmgr refresh --force
+  ignore_errors: true
+
+- name: Update firmware
+  ansible.builtin.shell: fwupdmgr update -y
+  ignore_errors: true
+  register: fw_result
+
+- name: Reboot after firmware update
+  ansible.builtin.reboot:
+  when: fw_result.rc == 0
+
+- name: Set default target to multi-user
+  ansible.builtin.shell: systemctl set-default multi-user.target
+
+- name: Stop graphical target
+  ansible.builtin.systemd:
+    name: graphical.target
+    state: stopped
+  ignore_errors: true
+
+- name: Copy disable-wifi service
+  ansible.builtin.copy:
+    src: disable-wifi.service
+    dest: /etc/systemd/system/disable-wifi.service
+    mode: "0644"
+  when: disable_wifi | bool
+
+- name: Enable and start disable-wifi service
+  ansible.builtin.systemd:
+    name: disable-wifi.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: disable_wifi | bool
+
+- name: Install common packages
+  ansible.builtin.apt:
+    name:
+      - curl
+      - wget
+      - git
+      - htop
+      - tmux
+      - net-tools
+      - jq
+      - python3-venv
+    state: present

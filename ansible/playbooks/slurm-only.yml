@@ -1,0 +1,5 @@
+---
+- name: Slurm workload manager
+  hosts: all
+  roles:
+    - slurm

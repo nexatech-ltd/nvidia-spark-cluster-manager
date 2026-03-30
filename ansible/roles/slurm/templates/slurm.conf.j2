@@ -1,0 +1,27 @@
+ClusterName=spark-cluster
+SlurmctldHost={{ groups['managers'][0] }}({{ hostvars[groups['managers'][0]].cx7_ip }})
+
+MpiDefault=pmix
+ProctrackType=proctrack/linuxproc
+ReturnToService=2
+SlurmctldPort=6817
+SlurmdPort=6818
+StateSaveLocation=/var/spool/slurmctld
+SlurmdSpoolDir=/var/spool/slurmd
+SwitchType=switch/none
+TaskPlugin=task/affinity,task/cgroup
+
+SchedulerType=sched/backfill
+SelectType=select/cons_tres
+GresTypes=gpu
+
+AccountingStorageType=accounting_storage/none
+JobAcctGatherType=jobacct_gather/none
+
+SlurmctldLogFile=/var/log/slurm/slurmctld.log
+SlurmdLogFile=/var/log/slurm/slurmd.log
+
+NodeName=spark-1 NodeAddr={{ hostvars['spark-1'].cx7_ip }} CPUs=20 RealMemory=120000 Gres=gpu:blackwell:1 State=UNKNOWN
+NodeName=spark-2 NodeAddr={{ hostvars['spark-2'].cx7_ip }} CPUs=20 RealMemory=120000 Gres=gpu:blackwell:1 State=UNKNOWN
+
+PartitionName={{ slurm_partition_name }} Nodes=spark-1,spark-2 Default=YES MaxTime=INFINITE State=UP
