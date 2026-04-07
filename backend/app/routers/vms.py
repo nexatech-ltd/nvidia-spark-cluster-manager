@@ -1,9 +1,11 @@
 import asyncio
 import json
 import logging
+import os
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile
 
+from app.config import settings
 from app.models.vm import (
     DiskCreate,
     DiskInfo,
@@ -27,10 +29,30 @@ ALLOWED_ACTIONS = {"start", "shutdown", "reboot", "suspend", "resume", "destroy"
 
 @router.get("/isos/", response_model=list[ISOInfo])
 async def list_isos(node: str | None = Query(None)):
+    """Scan ISO storage and NFS roots on the target node via SSH."""
+    target = node or settings.node1_hostname
+    dirs = [settings.iso_storage_path] + list(settings.nfs_roots)
+    host = node_service._host_for_node(target)
+    find_cmd = " ; ".join(
+        f"find {d} -maxdepth 1 -iname '*.iso' -printf '%s %p\\n' 2>/dev/null"
+        for d in dirs
+    )
     try:
-        return await asyncio.to_thread(libvirt_service.list_isos, node)
+        rc, stdout, _ = await node_service.ssh_run(host, find_cmd)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    isos = []
+    seen = set()
+    for line in stdout.strip().split("\n"):
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and parts[1] not in seen:
+            seen.add(parts[1])
+            isos.append({
+                "name": os.path.basename(parts[1]),
+                "size": int(parts[0]),
+                "path": parts[1],
+            })
+    return isos
 
 
 @router.post("/isos/upload")
@@ -66,15 +88,39 @@ async def list_os_variants(node: str = Query("spark-1")):
 
 @router.get("/bridges/")
 async def list_bridges(node: str = Query("spark-1")):
+    """Return Linux bridges + libvirt virtual networks available on the node."""
+    host = node_service._host_for_node(node)
     try:
-        host = node_service._host_for_node(node)
-        rc, stdout, _ = await node_service.ssh_run(
-            host, "ip -j link show type bridge",
+        cmd = (
+            "ip -j link show type bridge 2>/dev/null || true"
+            " && echo '___SPLIT___'"
+            " && virsh net-list --name 2>/dev/null || true"
         )
-        if rc != 0:
-            return []
-        bridges = json.loads(stdout)
-        return [{"name": b["ifname"], "state": b.get("operstate", "unknown")} for b in bridges]
+        rc, stdout, _ = await node_service.ssh_run(host, cmd)
+        parts = stdout.split("___SPLIT___")
+
+        results = []
+        seen = set()
+
+        if parts[0].strip():
+            try:
+                bridges = json.loads(parts[0].strip())
+                for b in bridges:
+                    name = b["ifname"]
+                    if name.startswith("docker") or name.startswith("br-"):
+                        continue
+                    seen.add(name)
+                    results.append({"name": name, "state": b.get("operstate", "unknown"), "type": "bridge"})
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        if len(parts) > 1:
+            for net_name in parts[1].strip().split("\n"):
+                net_name = net_name.strip()
+                if net_name and net_name not in seen:
+                    results.append({"name": net_name, "state": "active", "type": "network"})
+
+        return results
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

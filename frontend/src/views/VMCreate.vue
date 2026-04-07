@@ -41,7 +41,7 @@ const filteredVariants = computed(() => {
 async function fetchNodes() {
   try {
     const health = await get('/health')
-    nodes.value = Object.keys(health.nodes || {})
+    nodes.value = health.nodes || []
     if (nodes.value.length && !form.value.node) {
       form.value.node = nodes.value[0]
     }
@@ -278,15 +278,26 @@ function formatBytes(bytes) {
         <div>
           <label class="block text-sm font-medium text-gray-300 mb-1.5">Network Bridge</label>
           <select
+            v-if="bridges.length"
             v-model="form.network"
             class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50"
           >
-            <option v-if="!bridges.length && !bridgesLoading" value="">No bridges found</option>
             <option v-for="br in bridges" :key="br.name" :value="br.name">
-              {{ br.name }} ({{ br.state }})
+              {{ br.name }} ({{ br.type === 'network' ? 'libvirt' : br.state }})
             </option>
           </select>
+          <input
+            v-else
+            v-model="form.network"
+            placeholder="e.g. virbr0, br0"
+            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50 placeholder-gray-500"
+          />
           <p v-if="bridgesLoading" class="text-xs text-gray-500 mt-1">Loading bridges...</p>
+          <div v-else-if="!bridges.length" class="mt-1.5 p-2 rounded bg-amber-500/10 border border-amber-500/20">
+            <p class="text-xs text-amber-400">No bridges detected on {{ form.node }}. Create one with:</p>
+            <code class="block text-xs text-amber-300 mt-1">sudo virsh net-start default</code>
+            <p class="text-xs text-amber-400 mt-0.5">or configure a custom bridge via <code class="text-amber-300">nmcli</code></p>
+          </div>
         </div>
 
         <!-- OS Variant -->
