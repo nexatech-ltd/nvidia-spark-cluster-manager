@@ -143,6 +143,9 @@ class LibvirtService:
         )
 
         is_arm = host_arch in ("aarch64", "arm64")
+        os_variant = params.os_variant
+        if is_arm and os_variant.startswith("win"):
+            os_variant = "generic"
 
         parts = [
             "sudo virt-install",
@@ -153,7 +156,7 @@ class LibvirtService:
             f"--disk path={disk_path},size={params.disk_size_gb},format={params.disk_format},bus=virtio",
             f"--network bridge={params.network},model=virtio",
             "--graphics vnc,listen=0.0.0.0",
-            f"--os-variant {params.os_variant}",
+            f"--os-variant {os_variant}",
             "--noautoconsole",
         ]
 
