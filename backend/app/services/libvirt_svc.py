@@ -162,7 +162,6 @@ class LibvirtService:
                 "--arch aarch64",
                 "--machine virt",
                 "--boot uefi",
-                "--features hyperv=off",
             ]
 
         if params.iso:
