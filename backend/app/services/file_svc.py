@@ -139,6 +139,37 @@ class FileService:
             conn.close()
         return {"message": f"Uploaded '{filename}' to {path}"}
 
+    async def upload_file_stream(self, node: str, path: str, upload_file) -> dict:
+        """Stream upload: write to /tmp via SFTP, then sudo mv to target."""
+        self._validate_path(path)
+        filename = upload_file.filename
+        tmp_name = f"/tmp/.spark-upload-{os.getpid()}-{filename}"
+        target = os.path.join(path, filename)
+
+        conn, sftp = await self._get_sftp(node)
+        try:
+            async with sftp.open(tmp_name, "wb") as f:
+                while True:
+                    chunk = await upload_file.read(2 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    await f.write(chunk)
+        finally:
+            sftp.exit()
+            conn.close()
+
+        rc, _, stderr = await self._ssh_run(
+            node,
+            f"sudo mkdir -p '{path}'"
+            f" && sudo mv '{tmp_name}' '{target}'"
+            f" && sudo chmod 644 '{target}'",
+        )
+        if rc != 0:
+            await self._ssh_run(node, f"rm -f '{tmp_name}'")
+            raise RuntimeError(f"Failed to move uploaded file: {stderr}")
+
+        return {"message": f"Uploaded '{filename}' to {path}"}
+
     async def mkdir(self, node: str, path: str) -> dict:
         self._validate_path(os.path.dirname(path))
         conn, sftp = await self._get_sftp(node)

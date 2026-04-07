@@ -4,7 +4,8 @@ import { useApi } from '../composables/useApi'
 
 const { get, post, put, del, request } = useApi()
 
-const selectedNode = ref('spark-1')
+const nodes = ref([])
+const selectedNode = ref('')
 const currentPath = ref('/data')
 const entries = ref([])
 const loading = ref(true)
@@ -51,7 +52,14 @@ async function loadDir(path) {
   loading.value = false
 }
 
-onMounted(() => loadDir('/data'))
+onMounted(async () => {
+  try {
+    const health = await get('/health')
+    nodes.value = health.nodes || []
+    selectedNode.value = nodes.value[0] || 'spark-1'
+  } catch { nodes.value = ['spark-1', 'spark-2']; selectedNode.value = 'spark-1' }
+  loadDir('/data')
+})
 
 watch(selectedNode, () => {
   currentPath.value = '/data'
@@ -283,24 +291,89 @@ function onDrop(e) {
   if (files?.length) uploadFiles(files)
 }
 
+function formatSpeed(bytesPerSec) {
+  if (bytesPerSec <= 0) return '—'
+  if (bytesPerSec >= 1024 * 1024 * 1024) return `${(bytesPerSec / (1024 * 1024 * 1024)).toFixed(1)} GB/s`
+  if (bytesPerSec >= 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
+  if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+  return `${bytesPerSec.toFixed(0)} B/s`
+}
+
+function formatEta(seconds) {
+  if (!seconds || seconds <= 0 || !isFinite(seconds)) return ''
+  if (seconds < 60) return `${Math.ceil(seconds)}s left`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.ceil(seconds % 60)}s left`
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m left`
+}
+
 async function uploadFiles(files) {
   uploading.value = true
-  uploadProgress.value = Array.from(files).map(f => ({ name: f.name, percent: 0, done: false }))
+  const totalSize = Array.from(files).reduce((s, f) => s + f.size, 0)
+  uploadProgress.value = [{
+    name: files.length === 1 ? files[0].name : `${files.length} files`,
+    totalSize,
+    loaded: 0,
+    percent: 0,
+    speed: 0,
+    eta: '',
+    done: false,
+    error: '',
+  }]
 
   const formData = new FormData()
   for (const f of files) formData.append('files', f)
 
+  const token = localStorage.getItem('token')
+  const url = `/api/files/${selectedNode.value}/upload?path=${encodeURIComponent(currentPath.value)}`
+
   try {
-    await request(`/files/${selectedNode.value}/upload?path=${encodeURIComponent(currentPath.value)}`, {
-      method: 'POST',
-      body: formData,
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      const startTime = Date.now()
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (!e.lengthComputable) return
+        const p = uploadProgress.value[0]
+        p.loaded = e.loaded
+        p.percent = Math.round((e.loaded / e.total) * 100)
+        const elapsed = (Date.now() - startTime) / 1000
+        p.speed = elapsed > 0 ? e.loaded / elapsed : 0
+        const remaining = e.total - e.loaded
+        p.eta = p.speed > 0 ? formatEta(remaining / p.speed) : ''
+      })
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          const p = uploadProgress.value[0]
+          p.percent = 100
+          p.done = true
+          p.eta = ''
+          let resp
+          try { resp = JSON.parse(xhr.responseText) } catch { resp = {} }
+          if (resp.errors?.length) {
+            p.error = resp.errors.map(e => `${e.file}: ${e.error}`).join('; ')
+          }
+          resolve(resp)
+        } else {
+          let msg = 'Upload failed'
+          try { msg = JSON.parse(xhr.responseText)?.detail || xhr.statusText } catch { msg = xhr.statusText }
+          reject(new Error(Array.isArray(msg) ? msg.map(e => `${e.file}: ${e.error}`).join('; ') : msg))
+        }
+      })
+
+      xhr.addEventListener('error', () => reject(new Error('Network error during upload')))
+      xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')))
+
+      xhr.open('POST', url)
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      xhr.send(formData)
     })
-    uploadProgress.value.forEach(p => { p.percent = 100; p.done = true })
+
     setTimeout(async () => {
       uploading.value = false
       uploadProgress.value = []
       await loadDir(currentPath.value)
-    }, 800)
+    }, 1200)
   } catch (e) {
     error.value = e.message || 'Upload failed'
     uploading.value = false
@@ -315,7 +388,7 @@ async function uploadFiles(files) {
       <h2 class="text-2xl font-bold text-gray-100">File Browser</h2>
       <div class="flex items-center gap-1 bg-gray-800 rounded-lg p-1 border border-gray-700">
         <button
-          v-for="node in ['spark-1', 'spark-2']" :key="node"
+          v-for="node in nodes" :key="node"
           @click="selectedNode = node"
           class="px-3 py-1.5 text-sm rounded-md transition-colors"
           :class="selectedNode === node ? 'bg-gray-700 text-white font-medium' : 'text-gray-400 hover:text-gray-200'"
@@ -377,19 +450,29 @@ async function uploadFiles(files) {
     <div v-if="uploading" class="mb-4 space-y-2">
       <div
         v-for="up in uploadProgress" :key="up.name"
-        class="bg-gray-800 rounded-lg border border-gray-700 p-3"
+        class="bg-gray-800 rounded-lg border border-gray-700 p-4"
       >
-        <div class="flex items-center justify-between mb-1">
-          <span class="text-sm text-gray-200 truncate">{{ up.name }}</span>
-          <span class="text-xs text-gray-400">{{ up.done ? 'Done' : 'Uploading...' }}</span>
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm text-gray-200 truncate font-medium">{{ up.name }}</span>
+          <span v-if="up.error" class="text-xs text-red-400">Error</span>
+          <span v-else-if="up.done" class="text-xs text-green-400">Done</span>
+          <span v-else class="text-xs text-gray-400">{{ up.percent }}%</span>
         </div>
-        <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+        <div class="h-2 bg-gray-700 rounded-full overflow-hidden mb-2">
           <div
-            class="h-full bg-nvidia rounded-full transition-all duration-300"
-            :class="up.done ? '' : 'animate-pulse'"
-            :style="{ width: `${up.done ? 100 : 60}%` }"
+            class="h-full rounded-full transition-all duration-300"
+            :class="up.error ? 'bg-red-500' : up.done ? 'bg-green-500' : 'bg-nvidia'"
+            :style="{ width: `${up.percent}%` }"
           />
         </div>
+        <div class="flex items-center justify-between text-xs text-gray-500">
+          <span>{{ formatSize(up.loaded || 0) }} / {{ formatSize(up.totalSize || 0) }}</span>
+          <div class="flex items-center gap-3">
+            <span v-if="!up.done && up.speed">{{ formatSpeed(up.speed) }}</span>
+            <span v-if="!up.done && up.eta">{{ up.eta }}</span>
+          </div>
+        </div>
+        <div v-if="up.error" class="mt-2 text-xs text-red-400">{{ up.error }}</div>
       </div>
     </div>
 

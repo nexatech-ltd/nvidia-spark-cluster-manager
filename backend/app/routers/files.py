@@ -98,12 +98,12 @@ async def upload_files(
         if not f.filename:
             continue
         try:
-            data = await f.read()
-            result = await file_service.upload_file(node, path, data, f.filename)
+            result = await file_service.upload_file_stream(node, path, f)
             results.append(result)
         except ValueError as e:
             errors.append({"file": f.filename, "error": str(e)})
         except Exception as e:
+            logger.exception("Upload error for %s", f.filename)
             errors.append({"file": f.filename, "error": str(e)})
     if errors and not results:
         raise HTTPException(status_code=400, detail=errors)
