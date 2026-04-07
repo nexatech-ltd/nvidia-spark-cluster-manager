@@ -1,30 +1,71 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
 
 const router = useRouter()
 const { get, post } = useApi()
 
-const MEMORY_PRESETS = [1024, 2048, 4096, 8192, 16384]
-const NODES = ['spark-1', 'spark-2']
+const MEMORY_PRESETS = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
+
+const OS_VARIANTS = [
+  { value: 'ubuntu24.04', label: 'Ubuntu 24.04 LTS' },
+  { value: 'ubuntu22.04', label: 'Ubuntu 22.04 LTS' },
+  { value: 'ubuntu20.04', label: 'Ubuntu 20.04 LTS' },
+  { value: 'debian12',    label: 'Debian 12 (Bookworm)' },
+  { value: 'debian11',    label: 'Debian 11 (Bullseye)' },
+  { value: 'fedora40',    label: 'Fedora 40' },
+  { value: 'centos-stream9', label: 'CentOS Stream 9' },
+  { value: 'almalinux9',  label: 'AlmaLinux 9' },
+  { value: 'rocky9',      label: 'Rocky Linux 9' },
+  { value: 'win11',       label: 'Windows 11' },
+  { value: 'win10',       label: 'Windows 10' },
+  { value: 'freebsd14.0', label: 'FreeBSD 14' },
+  { value: 'generic',     label: 'Generic / Other' },
+]
+
+const nodes = ref([])
+const isos = ref([])
+const bridges = ref([])
+const isosLoading = ref(false)
+const bridgesLoading = ref(false)
+const submitting = ref(false)
+const error = ref('')
+const osSearch = ref('')
+const osDropdownOpen = ref(false)
 
 const form = ref({
   name: '',
-  node: 'spark-1',
+  node: '',
   vcpus: 4,
   memory_mb: 4096,
   disk_size_gb: 20,
   disk_format: 'qcow2',
   iso: '',
-  network: 'default',
+  network: '',
   os_variant: 'generic',
 })
 
-const isos = ref([])
-const isosLoading = ref(false)
-const submitting = ref(false)
-const error = ref('')
+const filteredVariants = computed(() => {
+  const q = osSearch.value.toLowerCase()
+  if (!q) return OS_VARIANTS
+  return OS_VARIANTS.filter(v => v.value.includes(q) || v.label.toLowerCase().includes(q))
+})
+
+const selectedOsLabel = computed(() => {
+  const found = OS_VARIANTS.find(v => v.value === form.value.os_variant)
+  return found ? found.label : form.value.os_variant
+})
+
+async function fetchNodes() {
+  try {
+    const health = await get('/health')
+    nodes.value = Object.keys(health.nodes || {})
+    if (nodes.value.length && !form.value.node) {
+      form.value.node = nodes.value[0]
+    }
+  } catch { /* ignore */ }
+}
 
 async function fetchISOs() {
   isosLoading.value = true
@@ -34,11 +75,37 @@ async function fetchISOs() {
   isosLoading.value = false
 }
 
-onMounted(fetchISOs)
+async function fetchBridges() {
+  bridgesLoading.value = true
+  try {
+    bridges.value = await get(`/vms/bridges/?node=${form.value.node}`)
+    if (bridges.value.length && !bridges.value.find(b => b.name === form.value.network)) {
+      form.value.network = bridges.value[0].name
+    }
+  } catch { /* ignore */ }
+  bridgesLoading.value = false
+}
 
-function onNodeChange() {
-  form.value.iso = ''
-  fetchISOs()
+watch(() => form.value.node, (val) => {
+  if (val) {
+    form.value.iso = ''
+    fetchISOs()
+    fetchBridges()
+  }
+})
+
+onMounted(async () => {
+  await fetchNodes()
+  if (form.value.node) {
+    fetchISOs()
+    fetchBridges()
+  }
+})
+
+function selectOsVariant(val) {
+  form.value.os_variant = val
+  osDropdownOpen.value = false
+  osSearch.value = ''
 }
 
 function setMemoryPreset(mb) {
@@ -110,10 +177,10 @@ function formatBytes(bytes) {
         <label class="block text-sm font-medium text-gray-300 mb-1.5">Node</label>
         <div class="flex gap-2">
           <button
-            v-for="n in NODES"
+            v-for="n in nodes"
             :key="n"
             type="button"
-            @click="form.node = n; onNodeChange()"
+            @click="form.node = n"
             class="flex-1 px-4 py-2.5 text-sm rounded-lg border transition-colors font-medium"
             :class="form.node === n
               ? 'bg-nvidia/10 text-nvidia border-nvidia/30'
@@ -132,9 +199,10 @@ function formatBytes(bytes) {
             v-model.number="form.vcpus"
             type="number"
             min="1"
-            max="20"
+            max="72"
             class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50"
           />
+          <p class="text-xs text-gray-500 mt-1">Grace CPU: up to 72 cores</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-gray-300 mb-1.5">Memory (MB)</label>
@@ -145,7 +213,7 @@ function formatBytes(bytes) {
             step="256"
             class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50"
           />
-          <div class="flex gap-1.5 mt-2">
+          <div class="flex flex-wrap gap-1.5 mt-2">
             <button
               v-for="preset in MEMORY_PRESETS"
               :key="preset"
@@ -203,31 +271,71 @@ function formatBytes(bytes) {
           class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50"
         >
           <option value="">None (import existing disk)</option>
-          <option v-for="iso in isos" :key="iso.name" :value="iso.name">
-            {{ iso.name }} ({{ formatBytes(iso.size) }})
+          <option v-for="iso in isos" :key="iso.path" :value="iso.path">
+            {{ iso.name }} ({{ formatBytes(iso.size) }}) &mdash; {{ iso.path }}
           </option>
         </select>
         <p v-if="isosLoading" class="text-xs text-gray-500 mt-1">Loading ISOs from {{ form.node }}...</p>
+        <p v-else class="text-xs text-gray-500 mt-1">
+          Place ISO files in <code class="text-gray-400">/var/lib/libvirt/isos</code> on the node, or upload via File Browser to <code class="text-gray-400">/data/shared*</code>
+        </p>
       </div>
 
-      <!-- Network & OS Variant -->
+      <!-- Network Bridge & OS Variant -->
       <div class="grid grid-cols-2 gap-4">
+        <!-- Network Bridge -->
         <div>
           <label class="block text-sm font-medium text-gray-300 mb-1.5">Network Bridge</label>
-          <input
+          <select
             v-model="form.network"
             class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50"
-            placeholder="default"
-          />
+          >
+            <option v-if="!bridges.length && !bridgesLoading" value="">No bridges found</option>
+            <option v-for="br in bridges" :key="br.name" :value="br.name">
+              {{ br.name }} ({{ br.state }})
+            </option>
+          </select>
+          <p v-if="bridgesLoading" class="text-xs text-gray-500 mt-1">Loading bridges...</p>
         </div>
-        <div>
+
+        <!-- OS Variant -->
+        <div class="relative">
           <label class="block text-sm font-medium text-gray-300 mb-1.5">OS Variant</label>
-          <input
-            v-model="form.os_variant"
-            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50"
-            placeholder="generic"
-          />
-          <p class="text-xs text-gray-500 mt-1">e.g. ubuntu22.04, debian11, win11, generic</p>
+          <button
+            type="button"
+            @click="osDropdownOpen = !osDropdownOpen"
+            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-left text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50 flex items-center justify-between"
+          >
+            <span>{{ selectedOsLabel }}</span>
+            <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          <div
+            v-if="osDropdownOpen"
+            class="absolute z-20 mt-1 w-full bg-gray-800 border border-gray-600 rounded-lg shadow-xl max-h-56 overflow-hidden flex flex-col"
+          >
+            <input
+              v-model="osSearch"
+              placeholder="Search OS..."
+              class="px-3 py-2 bg-gray-750 border-b border-gray-600 text-sm text-gray-100 focus:outline-none placeholder-gray-500"
+            />
+            <ul class="overflow-y-auto max-h-48">
+              <li
+                v-for="v in filteredVariants"
+                :key="v.value"
+                @click="selectOsVariant(v.value)"
+                class="px-3 py-2 text-sm cursor-pointer transition-colors"
+                :class="form.os_variant === v.value
+                  ? 'bg-nvidia/10 text-nvidia'
+                  : 'text-gray-300 hover:bg-gray-700'"
+              >
+                <span class="font-medium">{{ v.label }}</span>
+                <span class="text-gray-500 ml-1.5 text-xs">{{ v.value }}</span>
+              </li>
+              <li v-if="!filteredVariants.length" class="px-3 py-2 text-sm text-gray-500">No match</li>
+            </ul>
+          </div>
         </div>
       </div>
 
@@ -240,11 +348,15 @@ function formatBytes(bytes) {
           <span class="text-gray-500">Node:</span>
           <span class="text-gray-200">{{ form.node }}</span>
           <span class="text-gray-500">CPU / RAM:</span>
-          <span class="text-gray-200">{{ form.vcpus }} vCPUs / {{ form.memory_mb }} MB</span>
+          <span class="text-gray-200">{{ form.vcpus }} vCPUs / {{ form.memory_mb >= 1024 ? `${(form.memory_mb / 1024).toFixed(1)} GB` : `${form.memory_mb} MB` }}</span>
           <span class="text-gray-500">Disk:</span>
           <span class="text-gray-200">{{ form.disk_size_gb }} GB ({{ form.disk_format }})</span>
           <span class="text-gray-500">ISO:</span>
-          <span class="text-gray-200">{{ form.iso || 'None' }}</span>
+          <span class="text-gray-200">{{ form.iso ? isos.find(i => i.path === form.iso)?.name || form.iso : 'None' }}</span>
+          <span class="text-gray-500">Network:</span>
+          <span class="text-gray-200">{{ form.network || '—' }}</span>
+          <span class="text-gray-500">OS:</span>
+          <span class="text-gray-200">{{ selectedOsLabel }}</span>
         </div>
       </div>
 

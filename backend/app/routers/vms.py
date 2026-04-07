@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile
@@ -13,6 +14,7 @@ from app.models.vm import (
     VMInfo,
 )
 from app.services.libvirt_svc import libvirt_service
+from app.services.node_svc import node_service
 
 logger = logging.getLogger("spark-manager.vms")
 router = APIRouter()
@@ -41,6 +43,24 @@ async def upload_iso(file: UploadFile, node: str | None = Query(None)):
             libvirt_service.upload_iso, file.filename, data, node,
         )
     except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Bridges (must be before /{name} catch-all) ───────────────────────────
+
+
+@router.get("/bridges/")
+async def list_bridges(node: str = Query("spark-1")):
+    try:
+        host = node_service._host_for_node(node)
+        rc, stdout, _ = await node_service.ssh_run(
+            host, "ip -j link show type bridge",
+        )
+        if rc != 0:
+            return []
+        bridges = json.loads(stdout)
+        return [{"name": b["ifname"], "state": b.get("operstate", "unknown")} for b in bridges]
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -154,7 +154,7 @@ class LibvirtService:
         ]
 
         if params.iso:
-            iso_path = os.path.join(settings.iso_storage_path, params.iso)
+            iso_path = params.iso if params.iso.startswith("/") else os.path.join(settings.iso_storage_path, params.iso)
             cmd.extend(["--cdrom", iso_path])
         else:
             cmd.append("--import")
@@ -319,42 +319,52 @@ class LibvirtService:
 
     # ── ISOs ─────────────────────────────────────────────────────────────
 
-    def list_isos(self, node: str | None = None) -> list[dict]:
-        target_node = node or settings.node1_hostname
-        iso_dir = Path(settings.iso_storage_path)
-
-        if target_node != settings.node1_hostname:
-            result = subprocess.run(
-                [
-                    "ssh", f"{settings.ssh_user}@{settings.node2_ip}",
-                    "ls", "-1s", "--block-size=1", str(iso_dir),
-                ],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode != 0:
-                return []
-            isos = []
-            for line in result.stdout.strip().split("\n"):
-                parts = line.strip().split(None, 1)
-                if len(parts) == 2 and parts[1].endswith(".iso"):
-                    isos.append({
-                        "name": parts[1],
-                        "size": int(parts[0]),
-                        "path": str(iso_dir / parts[1]),
-                    })
-            return isos
-
-        if not iso_dir.is_dir():
+    def _scan_isos_local(self, directory: str) -> list[dict]:
+        d = Path(directory)
+        if not d.is_dir():
             return []
         return [
-            {
-                "name": f.name,
-                "size": f.stat().st_size,
-                "path": str(f),
-            }
-            for f in iso_dir.iterdir()
-            if f.suffix == ".iso"
+            {"name": f.name, "size": f.stat().st_size, "path": str(f)}
+            for f in d.iterdir()
+            if f.suffix.lower() == ".iso"
         ]
+
+    def _scan_isos_remote(self, directory: str) -> list[dict]:
+        result = subprocess.run(
+            [
+                "ssh", f"{settings.ssh_user}@{settings.node2_ip}",
+                "find", directory, "-maxdepth", "1", "-name", "*.iso",
+                "-printf", "%s %p\\n",
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        isos = []
+        for line in result.stdout.strip().split("\n"):
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2:
+                isos.append({
+                    "name": os.path.basename(parts[1]),
+                    "size": int(parts[0]),
+                    "path": parts[1],
+                })
+        return isos
+
+    def list_isos(self, node: str | None = None) -> list[dict]:
+        target_node = node or settings.node1_hostname
+        dirs = [settings.iso_storage_path] + list(settings.nfs_roots)
+        is_remote = target_node != settings.node1_hostname
+
+        all_isos = []
+        seen = set()
+        for d in dirs:
+            entries = self._scan_isos_remote(d) if is_remote else self._scan_isos_local(d)
+            for iso in entries:
+                if iso["path"] not in seen:
+                    seen.add(iso["path"])
+                    all_isos.append(iso)
+        return all_isos
 
     def upload_iso(self, filename: str, data: bytes, node: str | None = None) -> dict:
         target_node = node or settings.node1_hostname
