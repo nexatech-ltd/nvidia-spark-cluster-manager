@@ -199,7 +199,7 @@ class LibvirtService:
         profile["family"] = family
         return profile
 
-    def build_virt_install_cmd(self, params: VMCreate, host_arch: str = "aarch64") -> str:
+    def build_virt_install_cmd(self, params: VMCreate, host_arch: str = "aarch64", machine_type: str = "virt") -> str:
         """Build the virt-install shell command to run on the target node."""
         disk_path = os.path.join(
             settings.vm_storage_path, f"{params.name}.{params.disk_format}",
@@ -236,7 +236,7 @@ class LibvirtService:
         if is_arm:
             parts += [
                 "--arch aarch64",
-                "--machine virt",
+                f"--machine {machine_type}",
                 "--boot uefi",
             ]
 

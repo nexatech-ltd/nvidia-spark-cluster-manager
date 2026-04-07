@@ -129,13 +129,27 @@ async def get_hw_profile(os_variant: str = Query("generic")):
     return libvirt_service.get_hw_profile(os_variant)
 
 
+async def _detect_machine_type(host: str, arch: str) -> str:
+    """Query QEMU for the latest supported 'virt' machine version."""
+    if arch not in ("aarch64", "arm64"):
+        return "pc"
+    rc, stdout, _ = await node_service.ssh_run(
+        host,
+        "qemu-system-aarch64 -machine help 2>/dev/null | grep '^virt-' | sort -t- -k2 -V | tail -1 | awk '{print $1}'",
+    )
+    machine = stdout.strip() if rc == 0 and stdout.strip() else "virt"
+    logger.info("Detected machine type: %s", machine)
+    return machine
+
+
 @router.post("/preview")
 async def preview_command(params: VMCreate):
     """Return the virt-install command that would be run, without executing it."""
     host = node_service._host_for_node(params.node)
     _, arch_out, _ = await node_service.ssh_run(host, "uname -m")
     host_arch = arch_out.strip() or "aarch64"
-    cmd = libvirt_service.build_virt_install_cmd(params, host_arch=host_arch)
+    machine = await _detect_machine_type(host, host_arch)
+    cmd = libvirt_service.build_virt_install_cmd(params, host_arch=host_arch, machine_type=machine)
     return {"command": cmd}
 
 
@@ -266,7 +280,8 @@ async def create_vm(params: VMCreate):
     else:
         _, arch_out, _ = await node_service.ssh_run(host, "uname -m")
         host_arch = arch_out.strip() or "aarch64"
-        cmd = libvirt_service.build_virt_install_cmd(params, host_arch=host_arch)
+        machine = await _detect_machine_type(host, host_arch)
+        cmd = libvirt_service.build_virt_install_cmd(params, host_arch=host_arch, machine_type=machine)
     logger.info("Creating VM on %s: %s", params.node, cmd)
     rc, stdout, stderr = await node_service.ssh_run(host, cmd)
     if rc != 0:
