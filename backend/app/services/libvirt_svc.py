@@ -241,7 +241,8 @@ class LibvirtService:
             ]
 
         if is_windows:
-            parts.append("--tpm emulator,model=tpm-crb,version=2.0")
+            tpm_model = "tpm-tis" if is_arm else "tpm-crb"
+            parts.append(f"--tpm emulator,model={tpm_model},version=2.0")
 
         if params.iso:
             iso_path = params.iso if params.iso.startswith("/") else os.path.join(settings.iso_storage_path, params.iso)

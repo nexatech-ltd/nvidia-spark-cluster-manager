@@ -271,6 +271,13 @@ async def create_vm(params: VMCreate):
     rc, stdout, stderr = await node_service.ssh_run(host, cmd)
     if rc != 0:
         raise HTTPException(status_code=500, detail=f"virt-install failed: {stderr.strip()}")
+    # virt-install ignores --events on_reboot; patch XML post-creation
+    patch_cmd = (
+        f"sudo virsh dumpxml {_shlex_quote(params.name)} --inactive > /tmp/.vm-patch.xml"
+        f" && sed -i 's|<on_reboot>destroy</on_reboot>|<on_reboot>restart</on_reboot>|' /tmp/.vm-patch.xml"
+        f" && sudo virsh define /tmp/.vm-patch.xml && rm -f /tmp/.vm-patch.xml"
+    )
+    await node_service.ssh_run(host, patch_cmd)
     return {"message": f"VM '{params.name}' created on {params.node}", "stdout": stdout}
 
 
