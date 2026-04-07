@@ -435,6 +435,7 @@ class LibvirtService:
         flags = (
             libvirt.VIR_DOMAIN_UNDEFINE_MANAGED_SAVE
             | libvirt.VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA
+            | libvirt.VIR_DOMAIN_UNDEFINE_NVRAM
         )
         try:
             flags |= libvirt.VIR_DOMAIN_UNDEFINE_STORAGE
