@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -16,7 +17,7 @@ from app.models.vm import (
     VMCreate,
     VMInfo,
 )
-from app.services.libvirt_svc import libvirt_service
+from app.services.libvirt_svc import OS_TYPES, libvirt_service
 from app.services.node_svc import node_service
 
 logger = logging.getLogger("spark-manager.vms")
@@ -69,55 +70,16 @@ async def upload_iso(file: UploadFile, node: str | None = Query(None)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── OS Variants (must be before /{name} catch-all) ───────────────────────
-
-
-_OSINFO_ARM_SCRIPT = r"""
-import gi
-gi.require_version('Libosinfo', '1.0')
-from gi.repository import Libosinfo
-loader = Libosinfo.Loader()
-loader.process_default_path()
-db = loader.get_db()
-os_list = db.get_os_list()
-ids = set()
-for i in range(os_list.get_length()):
-    o = os_list.get_nth(i)
-    sid = o.get_short_id()
-    for getter in (o.get_tree_list, o.get_image_list):
-        lst = getter()
-        for j in range(lst.get_length()):
-            if lst.get_nth(j).get_architecture() == 'aarch64':
-                ids.add(sid)
-                break
-for sid in sorted(ids):
-    print(sid)
-""".strip()
-
-_ARM_EXTRAS = ["win10", "win11", "generic"]
+# ── OS Types (must be before /{name} catch-all) ──────────────────────────
 
 
 @router.get("/os-variants/")
 async def list_os_variants(node: str = Query("spark-1")):
-    """Return OS variants that support aarch64 on the target node."""
-    host = node_service._host_for_node(node)
-    try:
-        rc, stdout, _ = await node_service.ssh_run(
-            host, f"python3 -c {_shlex_quote(_OSINFO_ARM_SCRIPT)}",
-        )
-        if rc == 0 and stdout.strip():
-            variants = [v.strip() for v in stdout.strip().split("\n") if v.strip()]
-        else:
-            rc2, stdout2, _ = await node_service.ssh_run(
-                host, "virt-install --osinfo list 2>&1",
-            )
-            variants = [v.strip() for v in stdout2.strip().split("\n") if v.strip()] if rc2 == 0 else []
-        for extra in _ARM_EXTRAS:
-            if extra not in variants:
-                variants.append(extra)
-        return variants
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Return curated OS types with labels and family metadata."""
+    return [
+        {"id": k, "label": v.get("label", k), "family": v.get("family", "generic")}
+        for k, v in OS_TYPES.items()
+    ]
 
 
 # ── Hardware profiles (must be before /{name} catch-all) ─────────────────
@@ -143,14 +105,14 @@ async def _detect_machine_type(host: str, arch: str) -> str:
 
 
 @router.post("/preview")
-async def preview_command(params: VMCreate):
-    """Return the virt-install command that would be run, without executing it."""
+async def preview_vm(params: VMCreate):
+    """Return the libvirt domain XML that would be used, without creating anything."""
     host = node_service._host_for_node(params.node)
     _, arch_out, _ = await node_service.ssh_run(host, "uname -m")
     host_arch = arch_out.strip() or "aarch64"
-    machine = await _detect_machine_type(host, host_arch)
-    cmd = libvirt_service.build_virt_install_cmd(params, host_arch=host_arch, machine_type=machine)
-    return {"command": cmd}
+    machine = params.machine_type or await _detect_machine_type(host, host_arch)
+    xml = libvirt_service.build_domain_xml(params, arch=host_arch, machine_type=machine)
+    return {"xml": xml}
 
 
 # ── Bridges (must be before /{name} catch-all) ───────────────────────────
@@ -275,25 +237,72 @@ async def list_vms(node: str | None = Query(None)):
 @router.post("/", response_model=dict)
 async def create_vm(params: VMCreate):
     host = node_service._host_for_node(params.node)
-    if params.custom_cmd and params.custom_cmd.strip():
-        cmd = params.custom_cmd.strip()
+
+    if params.custom_xml and params.custom_xml.strip():
+        xml_content = params.custom_xml.strip()
     else:
         _, arch_out, _ = await node_service.ssh_run(host, "uname -m")
         host_arch = arch_out.strip() or "aarch64"
-        machine = await _detect_machine_type(host, host_arch)
-        cmd = libvirt_service.build_virt_install_cmd(params, host_arch=host_arch, machine_type=machine)
-    logger.info("Creating VM on %s: %s", params.node, cmd)
-    rc, stdout, stderr = await node_service.ssh_run(host, cmd)
-    if rc != 0:
-        raise HTTPException(status_code=500, detail=f"virt-install failed: {stderr.strip()}")
-    # virt-install ignores --events on_reboot; patch XML post-creation
-    patch_cmd = (
-        f"sudo virsh dumpxml {_shlex_quote(params.name)} --inactive > /tmp/.vm-patch.xml"
-        f" && sed -i 's|<on_reboot>destroy</on_reboot>|<on_reboot>restart</on_reboot>|' /tmp/.vm-patch.xml"
-        f" && sudo virsh define /tmp/.vm-patch.xml && rm -f /tmp/.vm-patch.xml"
+        machine = params.machine_type or await _detect_machine_type(host, host_arch)
+        xml_content = libvirt_service.build_domain_xml(
+            params, arch=host_arch, machine_type=machine,
+        )
+
+    logger.info("Creating VM '%s' on %s via XML define", params.name, params.node)
+
+    disk_path = os.path.join(
+        settings.vm_storage_path, f"{params.name}.{params.disk_format}",
     )
-    await node_service.ssh_run(host, patch_cmd)
-    return {"message": f"VM '{params.name}' created on {params.node}", "stdout": stdout}
+
+    # Create disk image if it doesn't already exist
+    check_cmd = f"test -f {_shlex_quote(disk_path)} && echo EXISTS || echo MISSING"
+    rc, out, _ = await node_service.ssh_run(host, check_cmd)
+    if "MISSING" in out:
+        img_cmd = (
+            f"sudo qemu-img create -f {_shlex_quote(params.disk_format)}"
+            f" {_shlex_quote(disk_path)} {params.disk_size_gb}G"
+        )
+        rc, _, stderr = await node_service.ssh_run(host, img_cmd)
+        if rc != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create disk image: {stderr.strip()}",
+            )
+
+    # Write XML to remote host via base64 (avoids heredoc delimiter issues)
+    tmp_xml = f"/tmp/.spark-vm-{params.name}.xml"
+    b64 = base64.b64encode(xml_content.encode()).decode()
+    write_cmd = f"echo '{b64}' | base64 -d | sudo tee {tmp_xml} > /dev/null"
+    rc, _, stderr = await node_service.ssh_run(host, write_cmd)
+    if rc != 0:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to write VM XML: {stderr.strip()}",
+        )
+
+    # Define the VM
+    rc, stdout, stderr = await node_service.ssh_run(
+        host, f"sudo virsh define {tmp_xml} 2>&1",
+    )
+    if rc != 0:
+        await node_service.ssh_run(host, f"sudo rm -f {_shlex_quote(disk_path)}")
+        await node_service.ssh_run(host, f"rm -f {tmp_xml}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to define VM: {stderr.strip() or stdout.strip()}",
+        )
+
+    # Start the VM
+    rc, stdout2, stderr2 = await node_service.ssh_run(
+        host, f"sudo virsh start {_shlex_quote(params.name)} 2>&1",
+    )
+    await node_service.ssh_run(host, f"rm -f {tmp_xml}")
+
+    if rc != 0:
+        return {
+            "message": f"VM '{params.name}' defined but failed to start: {stderr2.strip() or stdout2.strip()}",
+            "stdout": stdout2,
+        }
+
+    return {"message": f"VM '{params.name}' created and started on {params.node}", "stdout": stdout2}
 
 
 @router.get("/{name}", response_model=VMInfo)
@@ -313,9 +322,10 @@ async def vm_action(name: str, body: VMAction, node: str = Query(...)):
             status_code=400,
             detail=f"Invalid action. Allowed: {', '.join(sorted(ALLOWED_ACTIONS))}",
         )
+    timeout = body.timeout or 0
     try:
         return await asyncio.to_thread(
-            libvirt_service.vm_action, name, node, body.action,
+            libvirt_service.vm_action, name, node, body.action, timeout,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

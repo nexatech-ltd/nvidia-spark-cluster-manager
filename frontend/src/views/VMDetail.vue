@@ -60,7 +60,9 @@ async function doAction(action) {
   actionLoading.value = action
   error.value = ''
   try {
-    await post(`/vms/${vmName.value}/action?node=${node.value}`, { action })
+    const payload = { action }
+    if (action === 'shutdown') payload.timeout = 60
+    await post(`/vms/${vmName.value}/action?node=${node.value}`, payload)
     await fetchVM()
   } catch (e) {
     error.value = e.message || `Action '${action}' failed`

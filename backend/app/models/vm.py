@@ -11,9 +11,16 @@ class VMCreate(BaseModel):
     nic_model: str = "virtio"
     iso: str | None = None
     network: str = "default"
+    network_type: str = "bridge"
     os_variant: str = "generic"
     node: str = "spark-1"
-    custom_cmd: str | None = None
+    bios: str = "uefi"
+    machine_type: str | None = None
+    tpm: bool | None = None
+    secure_boot: bool = False
+    video: str = "virtio"
+    cpu_type: str = "host-passthrough"
+    custom_xml: str | None = None
 
 
 class VMInfo(BaseModel):
@@ -31,6 +38,7 @@ class VMInfo(BaseModel):
 
 class VMAction(BaseModel):
     action: str
+    timeout: int | None = None
 
 
 class SnapshotInfo(BaseModel):

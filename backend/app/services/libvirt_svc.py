@@ -1,6 +1,7 @@
 import logging
 import os
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,44 @@ _STATE_MAP = {
     libvirt.VIR_DOMAIN_SHUTOFF: "shutoff",
     libvirt.VIR_DOMAIN_CRASHED: "crashed",
     libvirt.VIR_DOMAIN_PMSUSPENDED: "pmsuspended",
+}
+
+# ── Static OS type catalogue (Proxmox-style) ────────────────────────────
+
+_FAMILY_DEFAULTS = {
+    "windows": {"disk_bus": "virtio", "nic_model": "e1000e", "tpm": False, "video": "virtio"},
+    "linux":   {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False, "video": "virtio"},
+    "bsd":     {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False, "video": "virtio"},
+    "generic": {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False, "video": "virtio"},
+}
+
+OS_TYPES: dict[str, dict] = {
+    "win11":          {"label": "Windows 11 / Server 2025",      "family": "windows", "tpm": True},
+    "win10":          {"label": "Windows 10 / Server 2016-2019", "family": "windows"},
+    "win8":           {"label": "Windows 8.x / Server 2012",     "family": "windows"},
+    "win7":           {"label": "Windows 7 / Server 2008 R2",    "family": "windows"},
+    "winxp":          {"label": "Windows XP / Server 2003",      "family": "windows"},
+    "ubuntu24.04":    {"label": "Ubuntu 24.04 LTS",              "family": "linux"},
+    "ubuntu22.04":    {"label": "Ubuntu 22.04 LTS",              "family": "linux"},
+    "ubuntu20.04":    {"label": "Ubuntu 20.04 LTS",              "family": "linux"},
+    "debian12":       {"label": "Debian 12 (Bookworm)",          "family": "linux"},
+    "debian11":       {"label": "Debian 11 (Bullseye)",          "family": "linux"},
+    "fedora41":       {"label": "Fedora 41+",                    "family": "linux"},
+    "fedora40":       {"label": "Fedora 39-40",                  "family": "linux"},
+    "centos-stream9": {"label": "CentOS Stream 9",               "family": "linux"},
+    "rhel9":          {"label": "RHEL 9 / Oracle Linux 9",       "family": "linux"},
+    "rhel8":          {"label": "RHEL 8 / Oracle Linux 8",       "family": "linux"},
+    "almalinux9":     {"label": "AlmaLinux 9",                   "family": "linux"},
+    "rocky9":         {"label": "Rocky Linux 9",                 "family": "linux"},
+    "opensuse15":     {"label": "openSUSE Leap 15",              "family": "linux"},
+    "archlinux":      {"label": "Arch Linux",                    "family": "linux"},
+    "alpine":         {"label": "Alpine Linux",                  "family": "linux"},
+    "nixos":          {"label": "NixOS",                         "family": "linux"},
+    "freebsd14":      {"label": "FreeBSD 14",                    "family": "bsd"},
+    "freebsd13":      {"label": "FreeBSD 13",                    "family": "bsd"},
+    "openbsd":        {"label": "OpenBSD",                       "family": "bsd"},
+    "generic":        {"label": "Generic OS",                    "family": "generic"},
+    "other":          {"label": "Other / Unknown",               "family": "generic"},
 }
 
 
@@ -163,94 +202,170 @@ class LibvirtService:
 
     # ── VM creation ──────────────────────────────────────────────────────
 
-    # ── Hardware profiles per OS family ──────────────────────────────────
-
-    # On aarch64 virt machine, UEFI firmware only has VirtIO storage drivers;
-    # SATA/IDE are invisible to UEFI.  Use virtio for all OS families.
-    _HW_PROFILES = {
-        "windows": {"disk_bus": "virtio", "nic_model": "e1000e", "tpm": True},
-        "linux":   {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False},
-        "freebsd": {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False},
-        "macos":   {"disk_bus": "virtio", "nic_model": "e1000e", "tpm": False},
-        "generic": {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False},
-    }
-
-    _OS_FAMILY_MAP = {
-        "win": "windows",
-        "ubuntu": "linux", "debian": "linux", "fedora": "linux",
-        "centos": "linux", "rhel": "linux", "almalinux": "linux",
-        "rocky": "linux", "opensuse": "linux", "sle": "linux",
-        "archlinux": "linux", "gentoo": "linux", "manjaro": "linux",
-        "nixos": "linux", "alpinelinux": "linux", "mageia": "linux",
-        "ol": "linux", "amazon": "linux",
-        "freebsd": "freebsd", "openbsd": "freebsd", "netbsd": "freebsd",
-        "macos": "macos", "darwin": "macos",
-    }
+    @staticmethod
+    def get_os_type_info(os_variant: str) -> dict:
+        """Return merged family defaults + per-OS overrides for an OS type."""
+        entry = OS_TYPES.get(os_variant, {})
+        family = entry.get("family", "generic")
+        result = dict(_FAMILY_DEFAULTS.get(family, _FAMILY_DEFAULTS["generic"]))
+        result["family"] = family
+        result["label"] = entry.get("label", os_variant)
+        for k in ("tpm", "disk_bus", "nic_model", "video"):
+            if k in entry:
+                result[k] = entry[k]
+        return result
 
     def get_hw_profile(self, os_variant: str) -> dict:
-        """Return recommended hardware profile for an OS variant."""
-        lower = os_variant.lower()
-        family = "generic"
-        for prefix, fam in self._OS_FAMILY_MAP.items():
-            if lower.startswith(prefix):
-                family = fam
-                break
-        profile = dict(self._HW_PROFILES.get(family, self._HW_PROFILES["generic"]))
-        profile["family"] = family
-        return profile
+        """Return recommended disk_bus, nic_model, tpm, family for a given OS."""
+        return self.get_os_type_info(os_variant)
 
-    def build_virt_install_cmd(self, params: VMCreate, host_arch: str = "aarch64", machine_type: str = "virt") -> str:
-        """Build the virt-install shell command to run on the target node."""
+    def build_domain_xml(
+        self,
+        params: VMCreate,
+        arch: str = "aarch64",
+        machine_type: str = "virt",
+    ) -> str:
+        """Build complete libvirt domain XML (replaces virt-install)."""
+        is_arm = arch in ("aarch64", "arm64")
+        os_info = self.get_os_type_info(params.os_variant)
+        is_windows = os_info["family"] == "windows"
+
+        disk_bus = params.disk_bus or os_info.get("disk_bus", "virtio")
+        nic_model = params.nic_model or os_info.get("nic_model", "virtio")
+        video_model = params.video or os_info.get("video", "virtio")
+        tpm_enabled = params.tpm if params.tpm is not None else os_info.get("tpm", False)
+
+        if is_arm and disk_bus in ("sata", "ide"):
+            logger.warning("Overriding disk_bus=%s→virtio (ARM UEFI)", disk_bus)
+            disk_bus = "virtio"
+
         disk_path = os.path.join(
             settings.vm_storage_path, f"{params.name}.{params.disk_format}",
         )
 
-        is_arm = host_arch in ("aarch64", "arm64")
-        os_variant = params.os_variant
-        if is_arm and os_variant.startswith("win"):
-            os_variant = "generic"
+        # ── Root ──
+        domain = ET.Element("domain", type="kvm")
+        ET.SubElement(domain, "name").text = params.name
+        ET.SubElement(domain, "memory", unit="MiB").text = str(params.memory_mb)
+        ET.SubElement(domain, "currentMemory", unit="MiB").text = str(params.memory_mb)
+        ET.SubElement(domain, "vcpu", placement="static").text = str(params.vcpus)
 
-        disk_bus = params.disk_bus or "virtio"
-        nic_model = params.nic_model or "virtio"
-
-        if is_arm and disk_bus in ("sata", "ide"):
-            logger.warning("Overriding disk_bus=%s to virtio (UEFI on aarch64 virt has no SATA/IDE drivers)", disk_bus)
-            disk_bus = "virtio"
-
-        is_windows = params.os_variant.lower().startswith("win")
-
-        parts = [
-            "sudo virt-install",
-            "--connect qemu:///system",
-            f"--name {params.name}",
-            f"--vcpus {params.vcpus}",
-            f"--memory {params.memory_mb}",
-            f"--disk path={disk_path},size={params.disk_size_gb},format={params.disk_format},bus={disk_bus}",
-            f"--network bridge={params.network},model={nic_model}",
-            "--graphics vnc,listen=0.0.0.0",
-            f"--os-variant {os_variant}",
-            "--noautoconsole",
-            "--events on_reboot=restart",
-        ]
-
+        # ── OS / firmware ──
+        os_el = ET.SubElement(domain, "os")
+        if params.bios == "uefi" or is_arm:
+            os_el.set("firmware", "efi")
         if is_arm:
-            parts += [
-                "--arch aarch64",
-                f"--machine {machine_type}",
-                "--boot uefi",
-            ]
-
-        if is_windows:
-            tpm_model = "tpm-tis" if is_arm else "tpm-crb"
-            parts.append(f"--tpm emulator,model={tpm_model},version=2.0")
-
-        if params.iso:
-            iso_path = params.iso if params.iso.startswith("/") else os.path.join(settings.iso_storage_path, params.iso)
-            parts.append(f"--cdrom {iso_path}")
+            type_el = ET.SubElement(os_el, "type", arch="aarch64", machine=machine_type)
         else:
-            parts.append("--import")
+            mach = machine_type or "pc"
+            type_el = ET.SubElement(os_el, "type", arch="x86_64", machine=mach)
+        type_el.text = "hvm"
+        if params.iso:
+            ET.SubElement(os_el, "boot", dev="cdrom")
+        ET.SubElement(os_el, "boot", dev="hd")
 
-        return " ".join(parts)
+        # ── Features ──
+        features = ET.SubElement(domain, "features")
+        ET.SubElement(features, "acpi")
+        if is_arm:
+            ET.SubElement(features, "gic", version="3")
+
+        # ── CPU ──
+        ET.SubElement(domain, "cpu", mode=params.cpu_type, check="none")
+
+        # ── Clock ──
+        if is_windows:
+            clock = ET.SubElement(domain, "clock", offset="localtime")
+            ET.SubElement(clock, "timer", name="rtc", tickpolicy="catchup")
+            ET.SubElement(clock, "timer", name="pit", tickpolicy="delay")
+            ET.SubElement(clock, "timer", name="hpet", present="no")
+        else:
+            clock = ET.SubElement(domain, "clock", offset="utc")
+            ET.SubElement(clock, "timer", name="rtc", tickpolicy="catchup")
+            ET.SubElement(clock, "timer", name="pit", tickpolicy="delay")
+
+        # ── Lifecycle ──
+        ET.SubElement(domain, "on_poweroff").text = "destroy"
+        ET.SubElement(domain, "on_reboot").text = "restart"
+        ET.SubElement(domain, "on_crash").text = "destroy"
+
+        # ── Devices ──
+        devices = ET.SubElement(domain, "devices")
+        emu = "/usr/bin/qemu-system-aarch64" if is_arm else "/usr/bin/qemu-system-x86_64"
+        ET.SubElement(devices, "emulator").text = emu
+
+        # Controllers
+        ET.SubElement(devices, "controller", type="scsi", model="virtio-scsi")
+        if is_arm:
+            ET.SubElement(devices, "controller", type="usb", model="ehci")
+        else:
+            ET.SubElement(devices, "controller", type="usb", model="qemu-xhci")
+
+        # Primary disk
+        disk_target = "vda" if disk_bus == "virtio" else "sda"
+        disk_el = ET.SubElement(devices, "disk", type="file", device="disk")
+        ET.SubElement(disk_el, "driver", name="qemu", type=params.disk_format, cache="writeback")
+        ET.SubElement(disk_el, "source", file=disk_path)
+        ET.SubElement(disk_el, "target", dev=disk_target, bus=disk_bus)
+
+        # CDROM
+        if params.iso:
+            iso_path = params.iso if params.iso.startswith("/") else os.path.join(
+                settings.iso_storage_path, params.iso,
+            )
+            cdrom_el = ET.SubElement(devices, "disk", type="file", device="cdrom")
+            ET.SubElement(cdrom_el, "driver", name="qemu", type="raw")
+            ET.SubElement(cdrom_el, "source", file=iso_path)
+            if is_arm:
+                cdrom_dev = "sdb" if disk_bus == "scsi" else "sda"
+                ET.SubElement(cdrom_el, "target", dev=cdrom_dev, bus="scsi")
+            else:
+                ET.SubElement(cdrom_el, "target", dev="hda", bus="ide")
+            ET.SubElement(cdrom_el, "readonly")
+
+        # Network
+        if params.network_type == "network":
+            iface_el = ET.SubElement(devices, "interface", type="network")
+            ET.SubElement(iface_el, "source", network=params.network)
+        else:
+            iface_el = ET.SubElement(devices, "interface", type="bridge")
+            ET.SubElement(iface_el, "source", bridge=params.network)
+        ET.SubElement(iface_el, "model", type=nic_model)
+
+        # Graphics
+        gfx = ET.SubElement(devices, "graphics", type="vnc", port="-1", autoport="yes")
+        gfx.set("listen", "0.0.0.0")
+        ET.SubElement(gfx, "listen", type="address", address="0.0.0.0")
+
+        # Video
+        vid = ET.SubElement(devices, "video")
+        ET.SubElement(vid, "model", type=video_model, heads="1")
+
+        # Console / serial
+        console = ET.SubElement(devices, "console", type="pty")
+        ET.SubElement(console, "target", type="serial", port="0")
+
+        # Input devices
+        ET.SubElement(devices, "input", type="tablet", bus="usb")
+        if is_arm:
+            ET.SubElement(devices, "input", type="keyboard", bus="usb")
+
+        # Guest agent channel
+        ch = ET.SubElement(devices, "channel", type="unix")
+        ET.SubElement(ch, "target", type="virtio", name="org.qemu.guest_agent.0")
+
+        # RNG
+        rng = ET.SubElement(devices, "rng", model="virtio")
+        ET.SubElement(rng, "backend", model="random").text = "/dev/urandom"
+
+        # TPM
+        if tpm_enabled:
+            tpm_model = "tpm-tis" if is_arm else "tpm-crb"
+            tpm_el = ET.SubElement(devices, "tpm", model=tpm_model)
+            ET.SubElement(tpm_el, "backend", type="emulator", version="2.0")
+
+        ET.indent(domain, space="  ")
+        return ET.tostring(domain, encoding="unicode", xml_declaration=False)
 
     # ── VM actions ───────────────────────────────────────────────────────
 
@@ -263,7 +378,7 @@ class LibvirtService:
         "destroy": "destroy",
     }
 
-    def vm_action(self, name: str, node: str, action: str) -> dict:
+    def vm_action(self, name: str, node: str, action: str, timeout: int = 0) -> dict:
         conn = self._get_conn(node)
         try:
             dom = conn.lookupByName(name)
@@ -272,6 +387,28 @@ class LibvirtService:
 
         if action == "undefine":
             return self.delete_vm(name, node)
+
+        # Graceful shutdown: send ACPI signal, poll, fallback to destroy
+        if action == "shutdown" and timeout > 0:
+            try:
+                dom.shutdown()
+            except libvirt.libvirtError as e:
+                raise RuntimeError(f"Shutdown failed on '{name}': {e}")
+            elapsed = 0
+            while elapsed < timeout:
+                time.sleep(2)
+                elapsed += 2
+                try:
+                    state_id, _ = dom.state()
+                    if state_id == libvirt.VIR_DOMAIN_SHUTOFF:
+                        return {"message": f"VM '{name}' shut down gracefully"}
+                except libvirt.libvirtError:
+                    return {"message": f"VM '{name}' shut down"}
+            try:
+                dom.destroy()
+            except libvirt.libvirtError:
+                pass
+            return {"message": f"VM '{name}' force-stopped after {timeout}s timeout"}
 
         method_name = self._ACTION_MAP.get(action)
         if method_name is None:

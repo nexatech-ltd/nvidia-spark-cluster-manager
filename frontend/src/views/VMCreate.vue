@@ -9,6 +9,8 @@ const { get, post } = useApi()
 const MEMORY_PRESETS = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
 const DISK_BUS_OPTIONS = ['virtio', 'scsi']
 const NIC_MODEL_OPTIONS = ['virtio', 'e1000e', 'e1000', 'rtl8139']
+const VIDEO_OPTIONS = ['virtio', 'qxl', 'vga', 'none']
+const CPU_OPTIONS = ['host-passthrough', 'host-model', 'max']
 
 const nodes = ref([])
 const isos = ref([])
@@ -23,10 +25,10 @@ const osSearch = ref('')
 const osDropdownOpen = ref(false)
 const hwFamily = ref('')
 const showAdvanced = ref(false)
-const previewCmd = ref('')
+const previewXml = ref('')
 const previewLoading = ref(false)
-const useCustomCmd = ref(false)
-const customCmd = ref('')
+const useCustomXml = ref(false)
+const customXml = ref('')
 
 const form = ref({
   name: '',
@@ -39,13 +41,22 @@ const form = ref({
   nic_model: 'virtio',
   iso: '',
   network: '',
+  network_type: 'bridge',
   os_variant: 'generic',
+  bios: 'uefi',
+  machine_type: null,
+  tpm: null,
+  secure_boot: false,
+  video: 'virtio',
+  cpu_type: 'host-passthrough',
 })
 
 const filteredVariants = computed(() => {
   const q = osSearch.value.toLowerCase()
   if (!q) return osVariants.value
-  return osVariants.value.filter(v => v.toLowerCase().includes(q))
+  return osVariants.value.filter(v =>
+    v.id.toLowerCase().includes(q) || v.label.toLowerCase().includes(q)
+  )
 })
 
 async function fetchNodes() {
@@ -72,6 +83,7 @@ async function fetchBridges() {
     bridges.value = await get(`/vms/bridges/?node=${form.value.node}`)
     if (bridges.value.length && !bridges.value.find(b => b.name === form.value.network)) {
       form.value.network = bridges.value[0].name
+      form.value.network_type = bridges.value[0].type || 'bridge'
     }
   } catch { /* ignore */ }
   bridgesLoading.value = false
@@ -94,6 +106,11 @@ watch(() => form.value.node, (val) => {
   }
 })
 
+watch(() => form.value.network, (val) => {
+  const br = bridges.value.find(b => b.name === val)
+  if (br) form.value.network_type = br.type || 'bridge'
+})
+
 onMounted(async () => {
   await fetchNodes()
   if (form.value.node) {
@@ -103,14 +120,15 @@ onMounted(async () => {
   }
 })
 
-async function selectOsVariant(val) {
-  form.value.os_variant = val
+async function selectOsVariant(variant) {
+  form.value.os_variant = variant.id
   osDropdownOpen.value = false
   osSearch.value = ''
   try {
-    const profile = await get(`/vms/hw-profile/?os_variant=${encodeURIComponent(val)}`)
+    const profile = await get(`/vms/hw-profile/?os_variant=${encodeURIComponent(variant.id)}`)
     if (profile.disk_bus) form.value.disk_bus = profile.disk_bus
     if (profile.nic_model) form.value.nic_model = profile.nic_model
+    if (profile.tpm !== undefined) form.value.tpm = profile.tpm || null
     hwFamily.value = profile.family || ''
   } catch { /* ignore */ }
 }
@@ -126,10 +144,10 @@ async function fetchPreview() {
     const payload = { ...form.value }
     if (!payload.iso) payload.iso = null
     const res = await post('/vms/preview', payload)
-    previewCmd.value = res.command || ''
-    customCmd.value = res.command || ''
+    previewXml.value = res.xml || ''
+    customXml.value = res.xml || ''
   } catch (e) {
-    previewCmd.value = `Error: ${e.message}`
+    previewXml.value = `Error: ${e.message}`
   }
   previewLoading.value = false
 }
@@ -144,8 +162,8 @@ async function create() {
   try {
     const payload = { ...form.value }
     if (!payload.iso) payload.iso = null
-    if (useCustomCmd.value && customCmd.value.trim()) {
-      payload.custom_cmd = customCmd.value.trim()
+    if (useCustomXml.value && customXml.value.trim()) {
+      payload.custom_xml = customXml.value.trim()
     }
     await post('/vms/', payload)
     router.push('/vms')
@@ -153,6 +171,11 @@ async function create() {
     error.value = e.message || 'Failed to create VM'
   }
   submitting.value = false
+}
+
+function selectedOsLabel() {
+  const v = osVariants.value.find(o => o.id === form.value.os_variant)
+  return v ? `${v.id} — ${v.label}` : form.value.os_variant
 }
 
 function formatBytes(bytes) {
@@ -285,6 +308,74 @@ function formatBytes(bytes) {
         </div>
       </div>
 
+      <!-- OS Variant & Network -->
+      <div class="grid grid-cols-2 gap-4">
+        <!-- OS Variant -->
+        <div class="relative">
+          <label class="block text-sm font-medium text-gray-300 mb-1.5">OS Type</label>
+          <button
+            type="button"
+            @click="osDropdownOpen = !osDropdownOpen"
+            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-left text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50 flex items-center justify-between"
+          >
+            <span class="truncate">{{ selectedOsLabel() }}</span>
+            <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          <div
+            v-if="osDropdownOpen"
+            class="absolute z-20 mt-1 w-full bg-gray-800 border border-gray-600 rounded-lg shadow-xl max-h-64 overflow-hidden flex flex-col"
+          >
+            <input
+              v-model="osSearch"
+              placeholder="Search..."
+              class="px-3 py-2 bg-gray-750 border-b border-gray-600 text-sm text-gray-100 focus:outline-none placeholder-gray-500"
+            />
+            <ul class="overflow-y-auto max-h-56">
+              <li
+                v-for="v in filteredVariants"
+                :key="v.id"
+                @click="selectOsVariant(v)"
+                class="px-3 py-1.5 text-sm cursor-pointer transition-colors"
+                :class="form.os_variant === v.id
+                  ? 'bg-nvidia/10 text-nvidia'
+                  : 'text-gray-300 hover:bg-gray-700'"
+              >
+                <span class="font-medium">{{ v.id }}</span>
+                <span class="text-gray-500 ml-1.5 text-xs">{{ v.label }}</span>
+              </li>
+              <li v-if="!filteredVariants.length" class="px-3 py-2 text-sm text-gray-500">No match</li>
+            </ul>
+          </div>
+          <p v-if="osVariantsLoading" class="text-xs text-gray-500 mt-1">Loading...</p>
+        </div>
+
+        <!-- Network Bridge -->
+        <div>
+          <label class="block text-sm font-medium text-gray-300 mb-1.5">Network</label>
+          <select
+            v-if="bridges.length"
+            v-model="form.network"
+            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50"
+          >
+            <option v-for="br in bridges" :key="br.name" :value="br.name">
+              {{ br.name }} ({{ br.type === 'network' ? 'libvirt' : br.state }})
+            </option>
+          </select>
+          <input
+            v-else
+            v-model="form.network"
+            placeholder="e.g. virbr0, br0"
+            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50 placeholder-gray-500"
+          />
+          <p v-if="bridgesLoading" class="text-xs text-gray-500 mt-1">Loading bridges...</p>
+          <div v-else-if="!bridges.length" class="mt-1.5 p-2 rounded bg-amber-500/10 border border-amber-500/20">
+            <p class="text-xs text-amber-400">No bridges detected. Run: <code class="text-amber-300">sudo virsh net-start default</code></p>
+          </div>
+        </div>
+      </div>
+
       <!-- Hardware Profile -->
       <div class="bg-gray-800/50 rounded-lg border border-gray-700 p-4">
         <div class="flex items-center justify-between mb-3">
@@ -312,7 +403,6 @@ function formatBytes(bytes) {
                   : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'"
               >{{ bus }}</button>
             </div>
-            <p class="text-xs text-gray-500 mt-1">ARM UEFI requires virtio (sata/ide auto-corrected)</p>
           </div>
           <div>
             <label class="block text-xs text-gray-400 mb-1">NIC Model</label>
@@ -328,7 +418,55 @@ function formatBytes(bytes) {
                   : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'"
               >{{ nic }}</button>
             </div>
-            <p v-if="hwFamily === 'windows'" class="text-xs text-amber-400/80 mt-1">Windows works best with e1000e</p>
+          </div>
+        </div>
+        <p v-if="hwFamily === 'windows'" class="text-xs text-amber-400/80 mt-2">Windows: e1000e NIC recommended. TPM enabled for Win11.</p>
+
+        <!-- Advanced toggle -->
+        <button
+          type="button"
+          @click="showAdvanced = !showAdvanced"
+          class="mt-3 text-xs text-gray-500 hover:text-gray-300 transition-colors flex items-center gap-1"
+        >
+          <svg class="w-3 h-3 transition-transform" :class="showAdvanced ? 'rotate-90' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+          </svg>
+          Advanced hardware options
+        </button>
+
+        <div v-if="showAdvanced" class="mt-3 pt-3 border-t border-gray-700 space-y-3">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">Video</label>
+              <select v-model="form.video" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
+                <option v-for="v in VIDEO_OPTIONS" :key="v" :value="v">{{ v }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">CPU Type</label>
+              <select v-model="form.cpu_type" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
+                <option v-for="c in CPU_OPTIONS" :key="c" :value="c">{{ c }}</option>
+              </select>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-4">
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">BIOS</label>
+              <select v-model="form.bios" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
+                <option value="uefi">UEFI (required on ARM)</option>
+                <option value="bios">SeaBIOS (x86 only)</option>
+              </select>
+            </div>
+            <label class="flex items-center gap-2 cursor-pointer self-end pb-1">
+              <input type="checkbox" v-model="form.tpm" :true-value="true" :false-value="null"
+                class="rounded border-gray-600 bg-gray-800 text-nvidia focus:ring-nvidia/50" />
+              <span class="text-xs text-gray-400">TPM 2.0</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer self-end pb-1">
+              <input type="checkbox" v-model="form.secure_boot"
+                class="rounded border-gray-600 bg-gray-800 text-nvidia focus:ring-nvidia/50" />
+              <span class="text-xs text-gray-400">Secure Boot</span>
+            </label>
           </div>
         </div>
       </div>
@@ -354,75 +492,6 @@ function formatBytes(bytes) {
         </p>
       </div>
 
-      <!-- Network Bridge & OS Variant -->
-      <div class="grid grid-cols-2 gap-4">
-        <!-- Network Bridge -->
-        <div>
-          <label class="block text-sm font-medium text-gray-300 mb-1.5">Network Bridge</label>
-          <select
-            v-if="bridges.length"
-            v-model="form.network"
-            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50"
-          >
-            <option v-for="br in bridges" :key="br.name" :value="br.name">
-              {{ br.name }} ({{ br.type === 'network' ? 'libvirt' : br.state }})
-            </option>
-          </select>
-          <input
-            v-else
-            v-model="form.network"
-            placeholder="e.g. virbr0, br0"
-            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50 placeholder-gray-500"
-          />
-          <p v-if="bridgesLoading" class="text-xs text-gray-500 mt-1">Loading bridges...</p>
-          <div v-else-if="!bridges.length" class="mt-1.5 p-2 rounded bg-amber-500/10 border border-amber-500/20">
-            <p class="text-xs text-amber-400">No bridges detected on {{ form.node }}. Create one with:</p>
-            <code class="block text-xs text-amber-300 mt-1">sudo virsh net-start default</code>
-            <p class="text-xs text-amber-400 mt-0.5">or configure a custom bridge via <code class="text-amber-300">nmcli</code></p>
-          </div>
-        </div>
-
-        <!-- OS Variant -->
-        <div class="relative">
-          <label class="block text-sm font-medium text-gray-300 mb-1.5">OS Variant</label>
-          <button
-            type="button"
-            @click="osDropdownOpen = !osDropdownOpen"
-            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-left text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50 flex items-center justify-between"
-          >
-            <span>{{ form.os_variant }}</span>
-            <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-          <div
-            v-if="osDropdownOpen"
-            class="absolute z-20 mt-1 w-full bg-gray-800 border border-gray-600 rounded-lg shadow-xl max-h-64 overflow-hidden flex flex-col"
-          >
-            <input
-              v-model="osSearch"
-              placeholder="Search OS variant..."
-              class="px-3 py-2 bg-gray-750 border-b border-gray-600 text-sm text-gray-100 focus:outline-none placeholder-gray-500"
-            />
-            <ul class="overflow-y-auto max-h-56">
-              <li
-                v-for="v in filteredVariants"
-                :key="v"
-                @click="selectOsVariant(v)"
-                class="px-3 py-1.5 text-sm cursor-pointer transition-colors"
-                :class="form.os_variant === v
-                  ? 'bg-nvidia/10 text-nvidia'
-                  : 'text-gray-300 hover:bg-gray-700'"
-              >
-                {{ v }}
-              </li>
-              <li v-if="!filteredVariants.length" class="px-3 py-2 text-sm text-gray-500">No match</li>
-            </ul>
-          </div>
-          <p v-if="osVariantsLoading" class="text-xs text-gray-500 mt-1">Loading variants...</p>
-        </div>
-      </div>
-
       <!-- Summary -->
       <div class="bg-gray-800/50 rounded-lg border border-gray-700 p-4">
         <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Summary</h3>
@@ -440,14 +509,14 @@ function formatBytes(bytes) {
           <span class="text-gray-500">Network:</span>
           <span class="text-gray-200">{{ form.network || '—' }} ({{ form.nic_model }})</span>
           <span class="text-gray-500">OS:</span>
-          <span class="text-gray-200">{{ form.os_variant }}</span>
+          <span class="text-gray-200">{{ selectedOsLabel() }}</span>
         </div>
       </div>
 
-      <!-- Command Preview -->
+      <!-- XML Preview -->
       <div class="bg-gray-800/50 rounded-lg border border-gray-700 p-4">
         <div class="flex items-center justify-between mb-2">
-          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide">virt-install Command</h3>
+          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Domain XML Preview</h3>
           <button
             type="button"
             @click="fetchPreview"
@@ -457,24 +526,24 @@ function formatBytes(bytes) {
             {{ previewLoading ? 'Loading...' : 'Generate Preview' }}
           </button>
         </div>
-        <div v-if="previewCmd" class="mt-2">
-          <pre class="bg-gray-900 rounded-lg p-3 text-xs text-gray-300 font-mono whitespace-pre-wrap break-all overflow-x-auto border border-gray-700">{{ previewCmd }}</pre>
+        <div v-if="previewXml" class="mt-2">
+          <pre class="bg-gray-900 rounded-lg p-3 text-xs text-gray-300 font-mono whitespace-pre overflow-x-auto border border-gray-700 max-h-64 overflow-y-auto">{{ previewXml }}</pre>
           <label class="flex items-center gap-2 mt-2 cursor-pointer">
             <input
               type="checkbox"
-              v-model="useCustomCmd"
+              v-model="useCustomXml"
               class="rounded border-gray-600 bg-gray-800 text-nvidia focus:ring-nvidia/50"
             />
-            <span class="text-xs text-gray-400">Edit and use custom command</span>
+            <span class="text-xs text-gray-400">Edit and use custom XML</span>
           </label>
           <textarea
-            v-if="useCustomCmd"
-            v-model="customCmd"
-            rows="5"
+            v-if="useCustomXml"
+            v-model="customXml"
+            rows="12"
             class="mt-2 w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-xs font-mono text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 resize-y"
           />
         </div>
-        <p v-else class="text-xs text-gray-500 mt-1">Fill in the form and click "Generate Preview" to see the command</p>
+        <p v-else class="text-xs text-gray-500 mt-1">Fill in the form and click "Generate Preview" to see the libvirt XML</p>
       </div>
 
       <!-- Submit -->
