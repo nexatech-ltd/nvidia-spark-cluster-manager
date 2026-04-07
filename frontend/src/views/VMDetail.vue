@@ -310,6 +310,78 @@ const vmXmlOriginal = ref('')
 const xmlLoading = ref(false)
 const xmlSaving = ref(false)
 const xmlDirty = computed(() => vmXml.value !== vmXmlOriginal.value)
+const xmlPreRef = ref(null)
+const xmlTextareaRef = ref(null)
+
+function _esc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function _hlTag(tag) {
+  const m = tag.match(/^(<\/?)(\S+?)((?:\s[\s\S]*?)?)(\/?>)$/)
+  if (!m) return _esc(tag)
+  const [, open, name, attrs, close] = m
+  let r = `<span class="xb">${_esc(open)}</span><span class="xt">${_esc(name)}</span>`
+  if (attrs) {
+    let last = 0
+    const re = /([\w:-]+)\s*=\s*("[^"]*"|'[^']*')/g
+    let am
+    while ((am = re.exec(attrs)) !== null) {
+      if (am.index > last) r += _esc(attrs.slice(last, am.index))
+      r += `<span class="xa">${_esc(am[1])}</span>=<span class="xv">${_esc(am[2])}</span>`
+      last = am.index + am[0].length
+    }
+    if (last < attrs.length) r += _esc(attrs.slice(last))
+  }
+  r += `<span class="xb">${_esc(close)}</span>`
+  return r
+}
+
+function highlightXml(raw) {
+  if (!raw) return ''
+  let out = '', i = 0
+  const len = raw.length
+  while (i < len) {
+    if (raw[i] === '<') {
+      if (raw.startsWith('<!--', i)) {
+        const end = raw.indexOf('-->', i + 4)
+        const j = end < 0 ? len : end + 3
+        out += `<span class="xc">${_esc(raw.slice(i, j))}</span>`
+        i = j
+      } else if (raw.startsWith('<?', i)) {
+        const end = raw.indexOf('?>', i + 2)
+        const j = end < 0 ? len : end + 2
+        out += `<span class="xp">${_esc(raw.slice(i, j))}</span>`
+        i = j
+      } else {
+        let j = i + 1, inQ = false, qC = ''
+        while (j < len) {
+          if (inQ) { if (raw[j] === qC) inQ = false }
+          else if (raw[j] === '"' || raw[j] === "'") { inQ = true; qC = raw[j] }
+          else if (raw[j] === '>') { j++; break }
+          j++
+        }
+        out += _hlTag(raw.slice(i, j))
+        i = j
+      }
+    } else {
+      const next = raw.indexOf('<', i)
+      const j = next < 0 ? len : next
+      out += _esc(raw.slice(i, j))
+      i = j
+    }
+  }
+  return out
+}
+
+const highlightedXml = computed(() => highlightXml(vmXml.value))
+
+function syncScroll() {
+  if (xmlPreRef.value && xmlTextareaRef.value) {
+    xmlPreRef.value.scrollTop = xmlTextareaRef.value.scrollTop
+    xmlPreRef.value.scrollLeft = xmlTextareaRef.value.scrollLeft
+  }
+}
 
 async function fetchXml() {
   xmlLoading.value = true
@@ -827,13 +899,16 @@ const actionButtons = computed(() => {
             </svg>
             Loading XML...
           </div>
-          <textarea
-            v-else
-            v-model="vmXml"
-            spellcheck="false"
-            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-xs font-mono text-gray-200 leading-relaxed focus:outline-none focus:ring-1 focus:ring-nvidia/50 resize-y"
-            style="min-height: 60vh; tab-size: 2;"
-          />
+          <div v-else class="xml-editor">
+            <pre ref="xmlPreRef" class="xml-highlight" aria-hidden="true"><code v-html="highlightedXml + '\n'"></code></pre>
+            <textarea
+              ref="xmlTextareaRef"
+              v-model="vmXml"
+              @scroll="syncScroll"
+              spellcheck="false"
+              class="xml-input"
+            />
+          </div>
           <p class="text-xs text-gray-500 mt-2">
             Edit the raw libvirt XML definition. Changes are applied via <code class="text-gray-400">virsh define</code>. A running VM will pick up most changes after restart.
           </p>
@@ -842,3 +917,56 @@ const actionButtons = computed(() => {
     </template>
   </div>
 </template>
+
+<style scoped>
+.xml-editor {
+  position: relative;
+  height: 60vh;
+  min-height: 300px;
+  border-radius: 0.5rem;
+  border: 1px solid #374151;
+  background: #111827;
+  overflow: hidden;
+  resize: vertical;
+}
+.xml-highlight,
+.xml-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  font-family: ui-monospace, SFMono-Regular, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  line-height: 1.625;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+  border: none;
+  outline: none;
+  background: transparent;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+.xml-highlight {
+  pointer-events: none;
+  color: #d1d5db;
+}
+.xml-input {
+  color: transparent;
+  caret-color: #e5e7eb;
+  resize: none;
+  -webkit-text-fill-color: transparent;
+}
+.xml-input::selection {
+  background: rgba(118, 185, 0, 0.3);
+}
+.xml-input::-moz-selection {
+  background: rgba(118, 185, 0, 0.3);
+}
+.xml-highlight :deep(.xb) { color: #6b7280; }
+.xml-highlight :deep(.xt) { color: #38bdf8; }
+.xml-highlight :deep(.xa) { color: #fbbf24; }
+.xml-highlight :deep(.xv) { color: #4ade80; }
+.xml-highlight :deep(.xc) { color: #6b7280; font-style: italic; }
+.xml-highlight :deep(.xp) { color: #a78bfa; }
+</style>
