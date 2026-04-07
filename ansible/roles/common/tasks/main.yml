@@ -19,6 +19,13 @@
     groups: docker
     append: true
 
+- name: Configure passwordless sudo for spark-manager SSH commands
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/spark-manager
+    content: "{{ ansible_user }} ALL=(ALL) NOPASSWD: ALL\n"
+    mode: "0440"
+    validate: visudo -cf %s
+
 - name: Fix NVIDIA repo GPG key
   ansible.builtin.shell: apt-key adv --fetch-keys https://repo.download.nvidia.com/baseos/GPG-KEY-dgx-cosmos-ece
   ignore_errors: true

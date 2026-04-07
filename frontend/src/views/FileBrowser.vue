@@ -343,9 +343,10 @@ async function uploadFiles(files) {
       })
 
       xhr.addEventListener('load', () => {
+        const p = uploadProgress.value[0]
         if (xhr.status >= 200 && xhr.status < 300) {
-          const p = uploadProgress.value[0]
           p.percent = 100
+          p.loaded = p.totalSize
           p.done = true
           p.eta = ''
           let resp
@@ -355,9 +356,13 @@ async function uploadFiles(files) {
           }
           resolve(resp)
         } else {
-          let msg = 'Upload failed'
-          try { msg = JSON.parse(xhr.responseText)?.detail || xhr.statusText } catch { msg = xhr.statusText }
-          reject(new Error(Array.isArray(msg) ? msg.map(e => `${e.file}: ${e.error}`).join('; ') : msg))
+          let detail
+          try { detail = JSON.parse(xhr.responseText)?.detail } catch { detail = xhr.statusText }
+          const msg = Array.isArray(detail) ? detail.map(e => `${e.file}: ${e.error}`).join('; ') : (detail || 'Upload failed')
+          p.percent = 100
+          p.done = true
+          p.error = msg
+          reject(new Error(msg))
         }
       })
 
@@ -369,15 +374,17 @@ async function uploadFiles(files) {
       xhr.send(formData)
     })
 
-    setTimeout(async () => {
-      uploading.value = false
-      uploadProgress.value = []
-      await loadDir(currentPath.value)
-    }, 1200)
-  } catch (e) {
-    error.value = e.message || 'Upload failed'
+    await new Promise(r => setTimeout(r, 1500))
     uploading.value = false
     uploadProgress.value = []
+    await loadDir(currentPath.value)
+  } catch (e) {
+    const hasVisibleError = uploadProgress.value[0]?.error
+    if (!hasVisibleError) error.value = e.message || 'Upload failed'
+    await new Promise(r => setTimeout(r, 3000))
+    uploading.value = false
+    uploadProgress.value = []
+    await loadDir(currentPath.value)
   }
 }
 </script>
