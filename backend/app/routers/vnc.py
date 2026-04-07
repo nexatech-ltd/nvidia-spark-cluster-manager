@@ -30,7 +30,7 @@ async def vnc_proxy(websocket: WebSocket, vm_name: str, node: str = Query(...)):
         await websocket.close(code=1008)
         return
 
-    vnc_host = "127.0.0.1" if node == settings.node1_hostname else settings.node2_ip
+    vnc_host = settings.node1_ip if node == settings.node1_hostname else settings.node2_ip
 
     try:
         reader, writer = await asyncio.open_connection(vnc_host, vnc_port)
