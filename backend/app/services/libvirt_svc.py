@@ -166,11 +166,11 @@ class LibvirtService:
     # ── Hardware profiles per OS family ──────────────────────────────────
 
     _HW_PROFILES = {
-        "windows": {"disk_bus": "sata", "nic_model": "e1000e"},
-        "linux":   {"disk_bus": "virtio", "nic_model": "virtio"},
-        "freebsd": {"disk_bus": "virtio", "nic_model": "virtio"},
-        "macos":   {"disk_bus": "sata", "nic_model": "e1000e"},
-        "generic": {"disk_bus": "virtio", "nic_model": "virtio"},
+        "windows": {"disk_bus": "sata", "nic_model": "e1000e", "tpm": True},
+        "linux":   {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False},
+        "freebsd": {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False},
+        "macos":   {"disk_bus": "sata", "nic_model": "e1000e", "tpm": False},
+        "generic": {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False},
     }
 
     _OS_FAMILY_MAP = {
@@ -211,6 +211,8 @@ class LibvirtService:
         disk_bus = params.disk_bus or "virtio"
         nic_model = params.nic_model or "virtio"
 
+        is_windows = params.os_variant.lower().startswith("win")
+
         parts = [
             "sudo virt-install",
             "--connect qemu:///system",
@@ -222,6 +224,7 @@ class LibvirtService:
             "--graphics vnc,listen=0.0.0.0",
             f"--os-variant {os_variant}",
             "--noautoconsole",
+            "--events on_reboot=restart",
         ]
 
         if is_arm:
@@ -230,6 +233,9 @@ class LibvirtService:
                 "--machine virt",
                 "--boot uefi",
             ]
+
+        if is_windows:
+            parts.append("--tpm emulator,model=tpm-crb,version=2.0")
 
         if params.iso:
             iso_path = params.iso if params.iso.startswith("/") else os.path.join(settings.iso_storage_path, params.iso)
