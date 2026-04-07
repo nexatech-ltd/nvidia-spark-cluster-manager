@@ -98,17 +98,41 @@ class LibvirtService:
 
         boot_order = [el.get("dev") for el in root.findall(".//os/boot") if el.get("dev")]
 
-        state_id, _ = dom.state()
+        # Parse vCPUs and memory from XML (robust for shutoff VMs)
+        vcpus_el = root.find("vcpu")
+        vcpus = int(vcpus_el.text) if vcpus_el is not None and vcpus_el.text else 0
+        mem_el = root.find("memory")
+        memory_kb = int(mem_el.text) if mem_el is not None and mem_el.text else 0
+        mem_unit = mem_el.get("unit", "KiB") if mem_el is not None else "KiB"
+        if mem_unit == "GiB":
+            memory_mb = memory_kb * 1024
+        elif mem_unit == "MiB":
+            memory_mb = memory_kb
+        elif mem_unit == "KiB":
+            memory_mb = memory_kb // 1024
+        else:
+            memory_mb = memory_kb // 1024
+
+        try:
+            state_id, _ = dom.state()
+            state = _STATE_MAP.get(state_id, "unknown")
+        except libvirt.libvirtError:
+            state = "unknown"
+
+        try:
+            autostart = bool(dom.autostart())
+        except libvirt.libvirtError:
+            autostart = False
 
         return {
             "name": dom.name(),
-            "state": _STATE_MAP.get(state_id, "unknown"),
-            "vcpus": dom.maxVcpus(),
-            "memory_mb": dom.maxMemory() // 1024,
+            "state": state,
+            "vcpus": vcpus,
+            "memory_mb": memory_mb,
             "disks": disks,
             "interfaces": interfaces,
             "vnc_port": vnc_port,
-            "autostart": bool(dom.autostart()),
+            "autostart": autostart,
             "node": node,
             "boot_order": boot_order,
         }
