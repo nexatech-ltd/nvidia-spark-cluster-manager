@@ -174,10 +174,13 @@ async def list_vms(node: str | None = Query(None)):
 
 @router.post("/", response_model=dict)
 async def create_vm(params: VMCreate):
-    try:
-        return await asyncio.to_thread(libvirt_service.create_vm, params)
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    cmd = libvirt_service.build_virt_install_cmd(params)
+    host = node_service._host_for_node(params.node)
+    logger.info("Creating VM on %s: %s", params.node, cmd)
+    rc, stdout, stderr = await node_service.ssh_run(host, cmd)
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=f"virt-install failed: {stderr.strip()}")
+    return {"message": f"VM '{params.name}' created on {params.node}", "stdout": stdout}
 
 
 @router.get("/{name}", response_model=VMInfo)

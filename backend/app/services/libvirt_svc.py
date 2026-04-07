@@ -136,45 +136,31 @@ class LibvirtService:
 
     # ── VM creation ──────────────────────────────────────────────────────
 
-    def create_vm(self, params: VMCreate) -> dict:
+    def build_virt_install_cmd(self, params: VMCreate) -> str:
+        """Build the virt-install shell command to run on the target node."""
         disk_path = os.path.join(
             settings.vm_storage_path, f"{params.name}.{params.disk_format}",
         )
 
-        cmd = [
+        parts = [
             "virt-install",
-            "--name", params.name,
-            "--vcpus", str(params.vcpus),
-            "--memory", str(params.memory_mb),
-            "--disk", f"path={disk_path},size={params.disk_size_gb},format={params.disk_format}",
-            "--network", f"bridge={params.network}",
-            "--graphics", "vnc,listen=0.0.0.0",
-            "--os-variant", params.os_variant,
+            f"--name {params.name}",
+            f"--vcpus {params.vcpus}",
+            f"--memory {params.memory_mb}",
+            f"--disk path={disk_path},size={params.disk_size_gb},format={params.disk_format}",
+            f"--network bridge={params.network}",
+            "--graphics vnc,listen=0.0.0.0",
+            f"--os-variant {params.os_variant}",
             "--noautoconsole",
         ]
 
         if params.iso:
             iso_path = params.iso if params.iso.startswith("/") else os.path.join(settings.iso_storage_path, params.iso)
-            cmd.extend(["--cdrom", iso_path])
+            parts.append(f"--cdrom {iso_path}")
         else:
-            cmd.append("--import")
+            parts.append("--import")
 
-        if params.node != settings.node1_hostname:
-            uri = settings.libvirt_uri_remote_template.format(
-                user=settings.ssh_user, host=settings.node2_ip,
-            )
-            cmd.extend(["--connect", uri])
-
-        logger.info("Creating VM: %s", " ".join(cmd))
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=120,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"virt-install failed (exit {result.returncode}): {result.stderr}",
-            )
-
-        return {"message": f"VM '{params.name}' created on {params.node}", "stdout": result.stdout}
+        return " ".join(parts)
 
     # ── VM actions ───────────────────────────────────────────────────────
 
