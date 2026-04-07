@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi'
+import { highlightXml } from '../composables/useXmlHighlight'
 
 const router = useRouter()
 const { get, post } = useApi()
@@ -184,6 +185,22 @@ function formatBytes(bytes) {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return (bytes / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i]
+}
+
+// ── XML highlight ───────────────────────────────────────────────────────
+
+const highlightedPreview = computed(() => highlightXml(previewXml.value))
+const highlightedCustom = computed(() => highlightXml(customXml.value))
+
+const previewPreRef = ref(null)
+const customPreRef = ref(null)
+const customTextareaRef = ref(null)
+
+function syncCustomScroll() {
+  if (customPreRef.value && customTextareaRef.value) {
+    customPreRef.value.scrollTop = customTextareaRef.value.scrollTop
+    customPreRef.value.scrollLeft = customTextareaRef.value.scrollLeft
+  }
 }
 </script>
 
@@ -527,7 +544,19 @@ function formatBytes(bytes) {
           </button>
         </div>
         <div v-if="previewXml" class="mt-2">
-          <pre class="bg-gray-900 rounded-lg p-3 text-xs text-gray-300 font-mono whitespace-pre overflow-x-auto border border-gray-700 max-h-64 overflow-y-auto">{{ previewXml }}</pre>
+          <div v-if="!useCustomXml" class="xml-preview">
+            <pre ref="previewPreRef" class="xml-highlight"><code v-html="highlightedPreview + '\n'"></code></pre>
+          </div>
+          <div v-else class="xml-editor">
+            <pre ref="customPreRef" class="xml-highlight" aria-hidden="true"><code v-html="highlightedCustom + '\n'"></code></pre>
+            <textarea
+              ref="customTextareaRef"
+              v-model="customXml"
+              @scroll="syncCustomScroll"
+              spellcheck="false"
+              class="xml-input"
+            />
+          </div>
           <label class="flex items-center gap-2 mt-2 cursor-pointer">
             <input
               type="checkbox"
@@ -536,12 +565,6 @@ function formatBytes(bytes) {
             />
             <span class="text-xs text-gray-400">Edit and use custom XML</span>
           </label>
-          <textarea
-            v-if="useCustomXml"
-            v-model="customXml"
-            rows="12"
-            class="mt-2 w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-xs font-mono text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 resize-y"
-          />
         </div>
         <p v-else class="text-xs text-gray-500 mt-1">Fill in the form and click "Generate Preview" to see the libvirt XML</p>
       </div>
@@ -573,3 +596,62 @@ function formatBytes(bytes) {
     </form>
   </div>
 </template>
+
+<style scoped>
+.xml-preview,
+.xml-editor {
+  position: relative;
+  border-radius: 0.5rem;
+  border: 1px solid #374151;
+  background: #111827;
+  overflow: hidden;
+}
+.xml-preview {
+  max-height: 16rem;
+  overflow: auto;
+}
+.xml-editor {
+  height: 20rem;
+  resize: vertical;
+}
+.xml-highlight,
+.xml-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  font-family: ui-monospace, SFMono-Regular, 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  line-height: 1.625;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+  border: none;
+  outline: none;
+  background: transparent;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+.xml-preview .xml-highlight {
+  position: static;
+  color: #d1d5db;
+}
+.xml-editor .xml-highlight {
+  pointer-events: none;
+  color: #d1d5db;
+}
+.xml-input {
+  color: transparent;
+  caret-color: #e5e7eb;
+  resize: none;
+  -webkit-text-fill-color: transparent;
+}
+.xml-input::selection { background: rgba(118, 185, 0, 0.3); }
+.xml-input::-moz-selection { background: rgba(118, 185, 0, 0.3); }
+.xml-highlight :deep(.xb) { color: #6b7280; }
+.xml-highlight :deep(.xt) { color: #38bdf8; }
+.xml-highlight :deep(.xa) { color: #fbbf24; }
+.xml-highlight :deep(.xv) { color: #4ade80; }
+.xml-highlight :deep(.xc) { color: #6b7280; font-style: italic; }
+.xml-highlight :deep(.xp) { color: #a78bfa; }
+</style>
