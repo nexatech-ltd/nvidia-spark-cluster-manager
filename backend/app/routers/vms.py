@@ -92,14 +92,18 @@ async def get_hw_profile(os_variant: str = Query("generic")):
 
 
 async def _detect_machine_type(host: str, arch: str) -> str:
-    """Query QEMU for the latest supported 'virt' machine version."""
+    """Query libvirt for the default machine type on the host."""
     if arch not in ("aarch64", "arm64"):
         return "pc"
     rc, stdout, _ = await node_service.ssh_run(
         host,
-        "qemu-system-aarch64 -machine help 2>/dev/null | grep '^virt-' | sort -t- -k2 -V | tail -1 | awk '{print $1}'",
+        "sudo virsh domcapabilities --virttype kvm 2>/dev/null"
+        " | sed -n 's:.*<machine[^>]*>\\([^<]*\\)</machine>:\\1:p'"
+        " | head -1",
     )
     machine = stdout.strip() if rc == 0 and stdout.strip() else "virt"
+    if not machine.startswith("virt"):
+        machine = "virt"
     logger.info("Detected machine type: %s", machine)
     return machine
 
@@ -244,6 +248,7 @@ async def create_vm(params: VMCreate):
         _, arch_out, _ = await node_service.ssh_run(host, "uname -m")
         host_arch = arch_out.strip() or "aarch64"
         machine = params.machine_type or await _detect_machine_type(host, host_arch)
+        logger.info("create_vm: arch=%s machine=%s", host_arch, machine)
         xml_content = libvirt_service.build_domain_xml(
             params, arch=host_arch, machine_type=machine,
         )
