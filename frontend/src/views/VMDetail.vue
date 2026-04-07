@@ -22,6 +22,7 @@ const TABS = [
   { id: 'info', label: 'Info', icon: 'M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
   { id: 'snapshots', label: 'Snapshots', icon: 'M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z' },
   { id: 'disks', label: 'Disks', icon: 'M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4' },
+  { id: 'config', label: 'Config', icon: 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4' },
 ]
 
 const STATE_STYLES = {
@@ -302,6 +303,42 @@ async function insertCdrom() {
   cdromLoading.value = ''
 }
 
+// ── VM XML config ────────────────────────────────────────────────────────
+
+const vmXml = ref('')
+const vmXmlOriginal = ref('')
+const xmlLoading = ref(false)
+const xmlSaving = ref(false)
+const xmlDirty = computed(() => vmXml.value !== vmXmlOriginal.value)
+
+async function fetchXml() {
+  xmlLoading.value = true
+  try {
+    const res = await get(`/vms/${vmName.value}/xml?node=${node.value}`)
+    vmXml.value = res.xml || ''
+    vmXmlOriginal.value = vmXml.value
+  } catch (e) {
+    error.value = e.message || 'Failed to load VM XML'
+  }
+  xmlLoading.value = false
+}
+
+async function saveXml() {
+  xmlSaving.value = true
+  try {
+    await put(`/vms/${vmName.value}/xml?node=${node.value}`, { xml: vmXml.value })
+    vmXmlOriginal.value = vmXml.value
+    await fetchVM()
+  } catch (e) {
+    error.value = e.message || 'Failed to save VM XML'
+  }
+  xmlSaving.value = false
+}
+
+function resetXml() {
+  vmXml.value = vmXmlOriginal.value
+}
+
 // ── Tab switching data loads ─────────────────────────────────────────────
 
 watch(activeTab, (tab) => {
@@ -314,6 +351,7 @@ watch(activeTab, (tab) => {
     fetchISOs()
     initBootOrder()
   }
+  if (tab === 'config') fetchXml()
 })
 
 const actionButtons = computed(() => {
@@ -760,6 +798,45 @@ const actionButtons = computed(() => {
             </button>
           </div>
           <div v-if="disksLoading" class="text-xs text-gray-500">Loading pool volumes...</div>
+        </div>
+      </div>
+
+      <!-- ═══ Config Tab ═══ -->
+      <div v-if="activeTab === 'config'" class="space-y-4">
+        <div class="bg-gray-800 rounded-xl border border-gray-700 p-5">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-gray-300">VM XML Configuration</h3>
+            <div class="flex items-center gap-2">
+              <span v-if="xmlDirty" class="text-xs text-amber-400">Unsaved changes</span>
+              <button
+                @click="resetXml"
+                :disabled="!xmlDirty || xmlSaving"
+                class="px-2.5 py-1 text-xs rounded-md bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors disabled:opacity-30"
+              >Reset</button>
+              <button
+                @click="saveXml"
+                :disabled="!xmlDirty || xmlSaving"
+                class="px-3 py-1 text-xs rounded-md bg-nvidia/10 text-nvidia border border-nvidia/30 hover:bg-nvidia/20 transition-colors disabled:opacity-30"
+              >{{ xmlSaving ? 'Saving...' : 'Save & Apply' }}</button>
+            </div>
+          </div>
+          <div v-if="xmlLoading" class="flex items-center gap-2 text-gray-400 text-sm py-8 justify-center">
+            <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            Loading XML...
+          </div>
+          <textarea
+            v-else
+            v-model="vmXml"
+            spellcheck="false"
+            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-xs font-mono text-gray-200 leading-relaxed focus:outline-none focus:ring-1 focus:ring-nvidia/50 resize-y"
+            style="min-height: 60vh; tab-size: 2;"
+          />
+          <p class="text-xs text-gray-500 mt-2">
+            Edit the raw libvirt XML definition. Changes are applied via <code class="text-gray-400">virsh define</code>. A running VM will pick up most changes after restart.
+          </p>
         </div>
       </div>
     </template>

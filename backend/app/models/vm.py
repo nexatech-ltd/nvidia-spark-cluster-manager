@@ -7,10 +7,13 @@ class VMCreate(BaseModel):
     memory_mb: int = 4096
     disk_size_gb: int = 20
     disk_format: str = "qcow2"
+    disk_bus: str = "virtio"
+    nic_model: str = "virtio"
     iso: str | None = None
     network: str = "default"
     os_variant: str = "generic"
     node: str = "spark-1"
+    custom_cmd: str | None = None
 
 
 class VMInfo(BaseModel):

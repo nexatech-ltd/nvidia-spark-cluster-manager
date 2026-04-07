@@ -7,6 +7,8 @@ const router = useRouter()
 const { get, post } = useApi()
 
 const MEMORY_PRESETS = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
+const DISK_BUS_OPTIONS = ['virtio', 'sata', 'scsi', 'ide']
+const NIC_MODEL_OPTIONS = ['virtio', 'e1000e', 'e1000', 'rtl8139']
 
 const nodes = ref([])
 const isos = ref([])
@@ -19,6 +21,12 @@ const submitting = ref(false)
 const error = ref('')
 const osSearch = ref('')
 const osDropdownOpen = ref(false)
+const hwFamily = ref('')
+const showAdvanced = ref(false)
+const previewCmd = ref('')
+const previewLoading = ref(false)
+const useCustomCmd = ref(false)
+const customCmd = ref('')
 
 const form = ref({
   name: '',
@@ -27,6 +35,8 @@ const form = ref({
   memory_mb: 4096,
   disk_size_gb: 20,
   disk_format: 'qcow2',
+  disk_bus: 'virtio',
+  nic_model: 'virtio',
   iso: '',
   network: '',
   os_variant: 'generic',
@@ -93,14 +103,35 @@ onMounted(async () => {
   }
 })
 
-function selectOsVariant(val) {
+async function selectOsVariant(val) {
   form.value.os_variant = val
   osDropdownOpen.value = false
   osSearch.value = ''
+  try {
+    const profile = await get(`/vms/hw-profile/?os_variant=${encodeURIComponent(val)}`)
+    if (profile.disk_bus) form.value.disk_bus = profile.disk_bus
+    if (profile.nic_model) form.value.nic_model = profile.nic_model
+    hwFamily.value = profile.family || ''
+  } catch { /* ignore */ }
 }
 
 function setMemoryPreset(mb) {
   form.value.memory_mb = mb
+}
+
+async function fetchPreview() {
+  if (!form.value.name.trim() || !form.value.node) return
+  previewLoading.value = true
+  try {
+    const payload = { ...form.value }
+    if (!payload.iso) payload.iso = null
+    const res = await post('/vms/preview', payload)
+    previewCmd.value = res.command || ''
+    customCmd.value = res.command || ''
+  } catch (e) {
+    previewCmd.value = `Error: ${e.message}`
+  }
+  previewLoading.value = false
 }
 
 async function create() {
@@ -113,6 +144,9 @@ async function create() {
   try {
     const payload = { ...form.value }
     if (!payload.iso) payload.iso = null
+    if (useCustomCmd.value && customCmd.value.trim()) {
+      payload.custom_cmd = customCmd.value.trim()
+    }
     await post('/vms/', payload)
     router.push('/vms')
   } catch (e) {
@@ -251,6 +285,54 @@ function formatBytes(bytes) {
         </div>
       </div>
 
+      <!-- Hardware Profile -->
+      <div class="bg-gray-800/50 rounded-lg border border-gray-700 p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Hardware Profile</h3>
+          <span v-if="hwFamily" class="text-xs px-2 py-0.5 rounded border"
+            :class="hwFamily === 'windows'
+              ? 'bg-blue-500/15 text-blue-400 border-blue-500/30'
+              : hwFamily === 'linux'
+                ? 'bg-green-500/15 text-green-400 border-green-500/30'
+                : 'bg-gray-500/15 text-gray-400 border-gray-500/30'"
+          >{{ hwFamily }}</span>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Disk Bus</label>
+            <div class="flex gap-1.5">
+              <button
+                v-for="bus in DISK_BUS_OPTIONS"
+                :key="bus"
+                type="button"
+                @click="form.disk_bus = bus"
+                class="flex-1 px-2 py-1.5 text-xs rounded-lg border transition-colors"
+                :class="form.disk_bus === bus
+                  ? 'bg-nvidia/10 text-nvidia border-nvidia/30'
+                  : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'"
+              >{{ bus }}</button>
+            </div>
+            <p v-if="hwFamily === 'windows'" class="text-xs text-amber-400/80 mt-1">Windows requires sata/scsi (no VirtIO drivers)</p>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">NIC Model</label>
+            <div class="flex gap-1.5">
+              <button
+                v-for="nic in NIC_MODEL_OPTIONS"
+                :key="nic"
+                type="button"
+                @click="form.nic_model = nic"
+                class="flex-1 px-2 py-1.5 text-xs rounded-lg border transition-colors"
+                :class="form.nic_model === nic
+                  ? 'bg-nvidia/10 text-nvidia border-nvidia/30'
+                  : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'"
+              >{{ nic }}</button>
+            </div>
+            <p v-if="hwFamily === 'windows'" class="text-xs text-amber-400/80 mt-1">Windows works best with e1000e</p>
+          </div>
+        </div>
+      </div>
+
       <!-- ISO -->
       <div>
         <label class="block text-sm font-medium text-gray-300 mb-1.5">
@@ -352,14 +434,47 @@ function formatBytes(bytes) {
           <span class="text-gray-500">CPU / RAM:</span>
           <span class="text-gray-200">{{ form.vcpus }} vCPUs / {{ form.memory_mb >= 1024 ? `${(form.memory_mb / 1024).toFixed(1)} GB` : `${form.memory_mb} MB` }}</span>
           <span class="text-gray-500">Disk:</span>
-          <span class="text-gray-200">{{ form.disk_size_gb }} GB ({{ form.disk_format }})</span>
+          <span class="text-gray-200">{{ form.disk_size_gb }} GB ({{ form.disk_format }}, {{ form.disk_bus }})</span>
           <span class="text-gray-500">ISO:</span>
           <span class="text-gray-200">{{ form.iso ? isos.find(i => i.path === form.iso)?.name || form.iso : 'None' }}</span>
           <span class="text-gray-500">Network:</span>
-          <span class="text-gray-200">{{ form.network || '—' }}</span>
+          <span class="text-gray-200">{{ form.network || '—' }} ({{ form.nic_model }})</span>
           <span class="text-gray-500">OS:</span>
           <span class="text-gray-200">{{ form.os_variant }}</span>
         </div>
+      </div>
+
+      <!-- Command Preview -->
+      <div class="bg-gray-800/50 rounded-lg border border-gray-700 p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide">virt-install Command</h3>
+          <button
+            type="button"
+            @click="fetchPreview"
+            :disabled="previewLoading || !form.name"
+            class="px-2.5 py-1 text-xs rounded-md bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors disabled:opacity-50"
+          >
+            {{ previewLoading ? 'Loading...' : 'Generate Preview' }}
+          </button>
+        </div>
+        <div v-if="previewCmd" class="mt-2">
+          <pre class="bg-gray-900 rounded-lg p-3 text-xs text-gray-300 font-mono whitespace-pre-wrap break-all overflow-x-auto border border-gray-700">{{ previewCmd }}</pre>
+          <label class="flex items-center gap-2 mt-2 cursor-pointer">
+            <input
+              type="checkbox"
+              v-model="useCustomCmd"
+              class="rounded border-gray-600 bg-gray-800 text-nvidia focus:ring-nvidia/50"
+            />
+            <span class="text-xs text-gray-400">Edit and use custom command</span>
+          </label>
+          <textarea
+            v-if="useCustomCmd"
+            v-model="customCmd"
+            rows="5"
+            class="mt-2 w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-xs font-mono text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 resize-y"
+          />
+        </div>
+        <p v-else class="text-xs text-gray-500 mt-1">Fill in the form and click "Generate Preview" to see the command</p>
       </div>
 
       <!-- Submit -->

@@ -139,6 +139,40 @@ class LibvirtService:
 
     # ── VM creation ──────────────────────────────────────────────────────
 
+    # ── Hardware profiles per OS family ──────────────────────────────────
+
+    _HW_PROFILES = {
+        "windows": {"disk_bus": "sata", "nic_model": "e1000e"},
+        "linux":   {"disk_bus": "virtio", "nic_model": "virtio"},
+        "freebsd": {"disk_bus": "virtio", "nic_model": "virtio"},
+        "macos":   {"disk_bus": "sata", "nic_model": "e1000e"},
+        "generic": {"disk_bus": "virtio", "nic_model": "virtio"},
+    }
+
+    _OS_FAMILY_MAP = {
+        "win": "windows",
+        "ubuntu": "linux", "debian": "linux", "fedora": "linux",
+        "centos": "linux", "rhel": "linux", "almalinux": "linux",
+        "rocky": "linux", "opensuse": "linux", "sle": "linux",
+        "archlinux": "linux", "gentoo": "linux", "manjaro": "linux",
+        "nixos": "linux", "alpinelinux": "linux", "mageia": "linux",
+        "ol": "linux", "amazon": "linux",
+        "freebsd": "freebsd", "openbsd": "freebsd", "netbsd": "freebsd",
+        "macos": "macos", "darwin": "macos",
+    }
+
+    def get_hw_profile(self, os_variant: str) -> dict:
+        """Return recommended hardware profile for an OS variant."""
+        lower = os_variant.lower()
+        family = "generic"
+        for prefix, fam in self._OS_FAMILY_MAP.items():
+            if lower.startswith(prefix):
+                family = fam
+                break
+        profile = dict(self._HW_PROFILES.get(family, self._HW_PROFILES["generic"]))
+        profile["family"] = family
+        return profile
+
     def build_virt_install_cmd(self, params: VMCreate, host_arch: str = "aarch64") -> str:
         """Build the virt-install shell command to run on the target node."""
         disk_path = os.path.join(
@@ -150,14 +184,17 @@ class LibvirtService:
         if is_arm and os_variant.startswith("win"):
             os_variant = "generic"
 
+        disk_bus = params.disk_bus or "virtio"
+        nic_model = params.nic_model or "virtio"
+
         parts = [
             "sudo virt-install",
             "--connect qemu:///system",
             f"--name {params.name}",
             f"--vcpus {params.vcpus}",
             f"--memory {params.memory_mb}",
-            f"--disk path={disk_path},size={params.disk_size_gb},format={params.disk_format},bus=virtio",
-            f"--network bridge={params.network},model=virtio",
+            f"--disk path={disk_path},size={params.disk_size_gb},format={params.disk_format},bus={disk_bus}",
+            f"--network bridge={params.network},model={nic_model}",
             "--graphics vnc,listen=0.0.0.0",
             f"--os-variant {os_variant}",
             "--noautoconsole",

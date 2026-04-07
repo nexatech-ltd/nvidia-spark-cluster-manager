@@ -120,6 +120,25 @@ async def list_os_variants(node: str = Query("spark-1")):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Hardware profiles (must be before /{name} catch-all) ─────────────────
+
+
+@router.get("/hw-profile/")
+async def get_hw_profile(os_variant: str = Query("generic")):
+    """Return recommended disk_bus, nic_model for an OS variant."""
+    return libvirt_service.get_hw_profile(os_variant)
+
+
+@router.post("/preview")
+async def preview_command(params: VMCreate):
+    """Return the virt-install command that would be run, without executing it."""
+    host = node_service._host_for_node(params.node)
+    _, arch_out, _ = await node_service.ssh_run(host, "uname -m")
+    host_arch = arch_out.strip() or "aarch64"
+    cmd = libvirt_service.build_virt_install_cmd(params, host_arch=host_arch)
+    return {"command": cmd}
+
+
 # ── Bridges (must be before /{name} catch-all) ───────────────────────────
 
 
@@ -242,10 +261,13 @@ async def list_vms(node: str | None = Query(None)):
 @router.post("/", response_model=dict)
 async def create_vm(params: VMCreate):
     host = node_service._host_for_node(params.node)
-    _, arch_out, _ = await node_service.ssh_run(host, "uname -m")
-    host_arch = arch_out.strip() or "aarch64"
-    cmd = libvirt_service.build_virt_install_cmd(params, host_arch=host_arch)
-    logger.info("Creating VM on %s (%s): %s", params.node, host_arch, cmd)
+    if params.custom_cmd and params.custom_cmd.strip():
+        cmd = params.custom_cmd.strip()
+    else:
+        _, arch_out, _ = await node_service.ssh_run(host, "uname -m")
+        host_arch = arch_out.strip() or "aarch64"
+        cmd = libvirt_service.build_virt_install_cmd(params, host_arch=host_arch)
+    logger.info("Creating VM on %s: %s", params.node, cmd)
     rc, stdout, stderr = await node_service.ssh_run(host, cmd)
     if rc != 0:
         raise HTTPException(status_code=500, detail=f"virt-install failed: {stderr.strip()}")
@@ -455,3 +477,38 @@ async def set_autostart(name: str, body: dict, node: str = Query(...)):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── VM XML config ────────────────────────────────────────────────────────
+
+
+@router.get("/{name}/xml")
+async def get_vm_xml(name: str, node: str = Query(...)):
+    """Return raw libvirt XML for a VM."""
+    host = node_service._host_for_node(node)
+    rc, stdout, stderr = await node_service.ssh_run(
+        host, f"sudo virsh dumpxml {_shlex_quote(name)} 2>&1",
+    )
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=stderr.strip())
+    return {"xml": stdout}
+
+
+@router.put("/{name}/xml")
+async def set_vm_xml(name: str, body: dict, node: str = Query(...)):
+    """Update a VM definition from raw XML (VM must be shut off or will apply on next boot)."""
+    xml_content = body.get("xml", "")
+    if not xml_content.strip():
+        raise HTTPException(status_code=400, detail="XML content is required")
+    host = node_service._host_for_node(node)
+    tmp = f"/tmp/.spark-vm-xml-{name}.xml"
+    write_cmd = f"cat > {tmp} << 'XMLEOF'\n{xml_content}\nXMLEOF"
+    rc, _, stderr = await node_service.ssh_run(host, write_cmd)
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=f"Failed to write XML: {stderr.strip()}")
+    rc2, stdout2, stderr2 = await node_service.ssh_run(
+        host, f"sudo virsh define {tmp} 2>&1 && rm -f {tmp}",
+    )
+    if rc2 != 0:
+        raise HTTPException(status_code=500, detail=f"Failed to define VM: {stderr2.strip()}")
+    return {"message": f"VM '{name}' redefined", "stdout": stdout2}
