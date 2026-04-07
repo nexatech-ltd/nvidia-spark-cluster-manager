@@ -170,27 +170,37 @@ async def list_disks(
     pool: str = Query("default"),
     node: str | None = Query(None),
 ):
+    """List volumes in a storage pool via SSH + virsh."""
     target = node or settings.node1_hostname
     host = node_service._host_for_node(target)
-    cmd = f"sudo virsh vol-list {pool} --details 2>/dev/null"
+    script = (
+        f"for v in $(sudo virsh vol-list {pool} 2>/dev/null | tail -n +3 | awk '{{print $1}}'); do "
+        f"  echo \"$v|$(sudo virsh vol-path --pool {pool} $v 2>/dev/null)"
+        f"|$(sudo virsh vol-info --pool {pool} $v 2>/dev/null | awk '/Capacity:/{{print $2,$3}}')"
+        f"|$(sudo virsh vol-dumpxml --pool {pool} $v 2>/dev/null | grep -oP '(?<=type=.)[^\"]+' | head -1)\";"
+        f" done"
+    )
     try:
-        rc, stdout, stderr = await node_service.ssh_run(host, cmd)
+        rc, stdout, stderr = await node_service.ssh_run(host, script)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    if rc != 0:
+    if rc != 0 and "not found" in stderr.lower():
         raise HTTPException(status_code=404, detail=f"Storage pool '{pool}' not found on {target}")
+    _UNITS = {"bytes": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4, "B": 1}
     disks = []
-    for line in stdout.strip().split("\n")[2:]:
-        parts = line.split()
-        if len(parts) >= 5:
-            name = parts[0]
-            path = parts[1]
-            fmt = parts[3] if len(parts) > 3 else "raw"
-            try:
-                size = int(float(parts[4]) * {"bytes": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4}.get(parts[5], 1)) if len(parts) > 5 else 0
-            except (ValueError, IndexError):
-                size = 0
-            disks.append({"name": name, "size": size, "format": fmt, "path": path, "pool": pool})
+    for line in stdout.strip().split("\n"):
+        parts = line.strip().split("|")
+        if len(parts) < 3 or not parts[0]:
+            continue
+        name = parts[0]
+        path = parts[1]
+        cap_parts = parts[2].strip().split()
+        try:
+            size = int(float(cap_parts[0]) * _UNITS.get(cap_parts[1], 1)) if len(cap_parts) >= 2 else 0
+        except (ValueError, IndexError):
+            size = 0
+        fmt = parts[3].strip() if len(parts) > 3 and parts[3].strip() else "raw"
+        disks.append({"name": name, "size": size, "format": fmt, "path": path, "pool": pool})
     return disks
 
 
