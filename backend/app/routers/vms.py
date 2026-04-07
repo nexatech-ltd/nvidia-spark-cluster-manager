@@ -493,6 +493,56 @@ async def change_cdrom(name: str, body: dict, node: str = Query(...)):
     return {"message": f"CDROM {action}", "stdout": stdout}
 
 
+# ── NIC link state ────────────────────────────────────────────────────────
+
+
+@router.get("/{name}/nics")
+async def get_nics(name: str, node: str = Query(...)):
+    """Return NIC list with live link state."""
+    host = node_service._host_for_node(node)
+    rc, xml_out, stderr = await node_service.ssh_run(
+        host, f"sudo virsh dumpxml {_shlex_quote(name)} 2>&1",
+    )
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=stderr.strip())
+
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml_out)
+    nics = []
+    for iface in root.iter("interface"):
+        mac_el = iface.find("mac")
+        src_el = iface.find("source")
+        model_el = iface.find("model")
+        link_el = iface.find("link")
+        mac = mac_el.get("address", "") if mac_el is not None else ""
+        nics.append({
+            "mac": mac,
+            "type": iface.get("type", ""),
+            "source": (src_el.get("bridge") or src_el.get("network") or "") if src_el is not None else "",
+            "model": model_el.get("type", "") if model_el is not None else "",
+            "link": link_el.get("state", "up") if link_el is not None else "up",
+        })
+    return nics
+
+
+@router.post("/{name}/nic-link")
+async def set_nic_link(name: str, body: dict, node: str = Query(...)):
+    """Connect or disconnect a NIC live via virsh domif-setlink."""
+    mac = body.get("mac", "")
+    state = body.get("state", "")
+    if not mac or state not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="'mac' and 'state' (up|down) required")
+    host = node_service._host_for_node(node)
+    cmd = f"sudo virsh domif-setlink {_shlex_quote(name)} {mac} {state} --live 2>&1"
+    rc, stdout, stderr = await node_service.ssh_run(host, cmd)
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=f"Failed: {stderr.strip() or stdout.strip()}")
+    cmd2 = f"sudo virsh domif-setlink {_shlex_quote(name)} {mac} {state} --config 2>&1"
+    await node_service.ssh_run(host, cmd2)
+    return {"message": f"NIC {mac} set to {state}"}
+
+
 # ── Autostart ────────────────────────────────────────────────────────────
 
 

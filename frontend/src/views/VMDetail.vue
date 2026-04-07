@@ -53,7 +53,14 @@ async function fetchVM() {
   loading.value = false
 }
 
-onMounted(fetchVM)
+onMounted(() => {
+  fetchVM().then(() => {
+    if (activeTab.value === 'console') {
+      fetchISOs()
+      fetchNics()
+    }
+  })
+})
 
 async function doAction(action) {
   if (!node.value) return
@@ -413,6 +420,42 @@ function resetXml() {
   vmXml.value = vmXmlOriginal.value
 }
 
+// ── Console device toolbar ───────────────────────────────────────────────
+
+const cdromPopover = ref(false)
+const nicPopover = ref(false)
+const nics = ref([])
+const nicsLoading = ref(false)
+const nicToggleLoading = ref('')
+
+async function fetchNics() {
+  if (!node.value) return
+  nicsLoading.value = true
+  try {
+    nics.value = await get(`/vms/${vmName.value}/nics?node=${node.value}`)
+  } catch { /* ignore */ }
+  nicsLoading.value = false
+}
+
+async function toggleNicLink(mac, currentState) {
+  nicToggleLoading.value = mac
+  try {
+    const newState = currentState === 'up' ? 'down' : 'up'
+    await post(`/vms/${vmName.value}/nic-link?node=${node.value}`, { mac, state: newState })
+    await fetchNics()
+  } catch (e) {
+    error.value = e.message || 'Failed to toggle NIC link'
+  }
+  nicToggleLoading.value = ''
+}
+
+function closePopovers(ev) {
+  if (!ev.target.closest('.popover-anchor')) {
+    cdromPopover.value = false
+    nicPopover.value = false
+  }
+}
+
 // ── Tab switching data loads ─────────────────────────────────────────────
 
 watch(activeTab, (tab) => {
@@ -424,6 +467,10 @@ watch(activeTab, (tab) => {
   if (tab === 'info') {
     fetchISOs()
     initBootOrder()
+  }
+  if (tab === 'console') {
+    fetchISOs()
+    fetchNics()
   }
   if (tab === 'config') fetchXml()
 })
@@ -532,25 +579,145 @@ const actionButtons = computed(() => {
       </div>
 
       <!-- ═══ Console Tab ═══ -->
-      <div v-if="activeTab === 'console'" class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden" style="height: 70vh;">
-        <VncConsole
-          v-if="vm.state === 'running'"
-          :vm-name="vmName"
-          :node="node"
-        />
-        <div v-else class="h-full flex flex-col items-center justify-center text-gray-500 gap-3">
-          <svg class="w-16 h-16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-              d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-          </svg>
-          <p>VM must be running to access console</p>
-          <button
-            v-if="vm.state === 'shutoff'"
-            @click="doAction('start')"
-            class="px-3 py-1.5 text-xs rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 transition-colors"
-          >
-            Start VM
-          </button>
+      <div v-if="activeTab === 'console'" @click="closePopovers">
+        <!-- Device toolbar -->
+        <div v-if="vm.state === 'running'" class="flex items-center gap-1 mb-1.5">
+          <!-- CD-ROM button -->
+          <div class="relative popover-anchor">
+            <button
+              @click.stop="cdromPopover = !cdromPopover; nicPopover = false"
+              class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border transition-colors"
+              :class="currentISO()
+                ? 'bg-purple-500/10 text-purple-300 border-purple-500/25 hover:bg-purple-500/20'
+                : 'bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700 hover:text-gray-200'"
+              title="CD-ROM"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" stroke-width="1.5"/>
+                <circle cx="12" cy="12" r="3" stroke-width="1.5"/>
+                <path stroke-width="1" d="M12 5a7 7 0 014.9 2.1M12 5a7 7 0 00-4.9 2.1M12 19a7 7 0 004.9-2.1M12 19a7 7 0 01-4.9-2.1" opacity="0.4"/>
+              </svg>
+              <span class="max-w-[120px] truncate">{{ currentISO() ? currentISO().split('/').pop() : 'No disc' }}</span>
+              <svg class="w-3 h-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </button>
+
+            <!-- CD-ROM popover -->
+            <Transition name="pop">
+              <div v-if="cdromPopover" class="absolute top-full left-0 mt-1 z-50 w-80 bg-gray-800 border border-gray-600 rounded-xl shadow-2xl shadow-black/40 overflow-hidden">
+                <div class="px-3 py-2.5 border-b border-gray-700 flex items-center justify-between">
+                  <span class="text-xs font-medium text-gray-300">CD-ROM / ISO</span>
+                  <button @click="cdromPopover = false" class="text-gray-500 hover:text-white text-sm">&times;</button>
+                </div>
+                <div class="p-3 space-y-2.5">
+                  <div class="flex items-center gap-2 text-xs">
+                    <span class="text-gray-500 shrink-0">Current:</span>
+                    <span class="font-mono text-gray-300 truncate flex-1" :title="currentISO()">{{ currentISO() ? currentISO().split('/').pop() : '(empty)' }}</span>
+                    <button
+                      v-if="currentISO()"
+                      @click="ejectCdrom(); cdromPopover = false"
+                      :disabled="cdromLoading === 'eject'"
+                      class="px-2 py-0.5 rounded bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors disabled:opacity-50 shrink-0"
+                    >{{ cdromLoading === 'eject' ? '...' : 'Eject' }}</button>
+                  </div>
+                  <div v-if="isosLoading" class="text-xs text-gray-500 py-1">Loading ISOs...</div>
+                  <template v-else-if="isos.length">
+                    <select
+                      v-model="selectedIso"
+                      class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2.5 py-1.5 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-nvidia/50"
+                    >
+                      <option value="">Select ISO to insert...</option>
+                      <option v-for="iso in isos" :key="iso.path" :value="iso.path">
+                        {{ iso.name }} ({{ formatBytes(iso.size) }})
+                      </option>
+                    </select>
+                    <button
+                      @click="insertCdrom(); cdromPopover = false"
+                      :disabled="!selectedIso || cdromLoading === 'insert'"
+                      class="w-full px-3 py-1.5 text-xs rounded-lg bg-nvidia/10 text-nvidia border border-nvidia/30 hover:bg-nvidia/20 transition-colors disabled:opacity-30"
+                    >{{ cdromLoading === 'insert' ? 'Inserting...' : 'Insert disc' }}</button>
+                  </template>
+                  <p v-else class="text-xs text-gray-500">No ISOs available</p>
+                </div>
+              </div>
+            </Transition>
+          </div>
+
+          <!-- NIC button -->
+          <div class="relative popover-anchor">
+            <button
+              @click.stop="nicPopover = !nicPopover; cdromPopover = false"
+              class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border transition-colors"
+              :class="nics.every(n => n.link === 'up')
+                ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/25 hover:bg-cyan-500/20'
+                : 'bg-amber-500/10 text-amber-300 border-amber-500/25 hover:bg-amber-500/20'"
+              title="Network adapters"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8.288 15.038a5.25 5.25 0 017.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 011.06 0z"/>
+              </svg>
+              <span>{{ nics.length }} NIC{{ nics.length !== 1 ? 's' : '' }}</span>
+              <svg class="w-3 h-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </button>
+
+            <!-- NIC popover -->
+            <Transition name="pop">
+              <div v-if="nicPopover" class="absolute top-full left-0 mt-1 z-50 w-80 bg-gray-800 border border-gray-600 rounded-xl shadow-2xl shadow-black/40 overflow-hidden">
+                <div class="px-3 py-2.5 border-b border-gray-700 flex items-center justify-between">
+                  <span class="text-xs font-medium text-gray-300">Network Adapters</span>
+                  <button @click="nicPopover = false" class="text-gray-500 hover:text-white text-sm">&times;</button>
+                </div>
+                <div v-if="nicsLoading" class="p-4 text-xs text-gray-500 text-center">Loading...</div>
+                <div v-else-if="!nics.length" class="p-4 text-xs text-gray-500 text-center">No NICs configured</div>
+                <div v-else class="divide-y divide-gray-700/50">
+                  <div v-for="nic in nics" :key="nic.mac" class="px-3 py-2.5 flex items-center gap-2.5">
+                    <div
+                      class="w-2 h-2 rounded-full shrink-0"
+                      :class="nic.link === 'up' ? 'bg-green-400' : 'bg-gray-600'"
+                    />
+                    <div class="flex-1 min-w-0">
+                      <div class="text-xs text-gray-200 font-mono truncate">{{ nic.mac }}</div>
+                      <div class="text-[10px] text-gray-500">{{ nic.source }} &middot; {{ nic.model }}</div>
+                    </div>
+                    <button
+                      @click="toggleNicLink(nic.mac, nic.link)"
+                      :disabled="nicToggleLoading === nic.mac"
+                      class="relative w-9 h-5 rounded-full transition-colors focus:outline-none disabled:opacity-50 shrink-0"
+                      :class="nic.link === 'up' ? 'bg-green-500' : 'bg-gray-600'"
+                      :title="nic.link === 'up' ? 'Disconnect' : 'Connect'"
+                    >
+                      <span
+                        class="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform"
+                        :class="nic.link === 'up' ? 'translate-x-4' : 'translate-x-0'"
+                      />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </Transition>
+          </div>
+        </div>
+
+        <!-- Console -->
+        <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden" style="height: 70vh;">
+          <VncConsole
+            v-if="vm.state === 'running'"
+            :vm-name="vmName"
+            :node="node"
+          />
+          <div v-else class="h-full flex flex-col items-center justify-center text-gray-500 gap-3">
+            <svg class="w-16 h-16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+            <p>VM must be running to access console</p>
+            <button
+              v-if="vm.state === 'shutoff'"
+              @click="doAction('start')"
+              class="px-3 py-1.5 text-xs rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 transition-colors"
+            >
+              Start VM
+            </button>
+          </div>
         </div>
       </div>
 
@@ -971,4 +1138,9 @@ const actionButtons = computed(() => {
 .xml-highlight :deep(.xv) { color: #4ade80; }
 .xml-highlight :deep(.xc) { color: #6b7280; font-style: italic; }
 .xml-highlight :deep(.xp) { color: #a78bfa; }
+
+.pop-enter-active { transition: all 0.15s ease-out; }
+.pop-leave-active { transition: all 0.1s ease-in; }
+.pop-enter-from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+.pop-leave-to { opacity: 0; transform: translateY(-4px) scale(0.97); }
 </style>
