@@ -316,6 +316,7 @@ async function uploadFiles(files) {
     percent: 0,
     speed: 0,
     eta: '',
+    phase: 'uploading',
     done: false,
     error: '',
   }]
@@ -342,13 +343,20 @@ async function uploadFiles(files) {
         p.eta = p.speed > 0 ? formatEta(remaining / p.speed) : ''
       })
 
+      xhr.upload.addEventListener('load', () => {
+        const p = uploadProgress.value[0]
+        p.phase = 'saving'
+        p.percent = 100
+        p.loaded = p.totalSize
+        p.speed = 0
+        p.eta = ''
+      })
+
       xhr.addEventListener('load', () => {
         const p = uploadProgress.value[0]
         if (xhr.status >= 200 && xhr.status < 300) {
-          p.percent = 100
-          p.loaded = p.totalSize
+          p.phase = 'done'
           p.done = true
-          p.eta = ''
           let resp
           try { resp = JSON.parse(xhr.responseText) } catch { resp = {} }
           if (resp.errors?.length) {
@@ -359,7 +367,7 @@ async function uploadFiles(files) {
           let detail
           try { detail = JSON.parse(xhr.responseText)?.detail } catch { detail = xhr.statusText }
           const msg = Array.isArray(detail) ? detail.map(e => `${e.file}: ${e.error}`).join('; ') : (detail || 'Upload failed')
-          p.percent = 100
+          p.phase = 'done'
           p.done = true
           p.error = msg
           reject(new Error(msg))
@@ -462,22 +470,36 @@ async function uploadFiles(files) {
         <div class="flex items-center justify-between mb-2">
           <span class="text-sm text-gray-200 truncate font-medium">{{ up.name }}</span>
           <span v-if="up.error" class="text-xs text-red-400">Error</span>
-          <span v-else-if="up.done" class="text-xs text-green-400">Done</span>
-          <span v-else class="text-xs text-gray-400">{{ up.percent }}%</span>
+          <span v-else-if="up.phase === 'done'" class="text-xs text-green-400">Done</span>
+          <span v-else-if="up.phase === 'saving'" class="text-xs text-amber-400">Saving to node...</span>
+          <span v-else class="text-xs text-gray-400">Uploading {{ up.percent }}%</span>
         </div>
         <div class="h-2 bg-gray-700 rounded-full overflow-hidden mb-2">
           <div
+            v-if="up.phase === 'saving'"
+            class="h-full rounded-full bg-amber-500 animate-progress-indeterminate"
+          />
+          <div
+            v-else
             class="h-full rounded-full transition-all duration-300"
-            :class="up.error ? 'bg-red-500' : up.done ? 'bg-green-500' : 'bg-nvidia'"
+            :class="up.error ? 'bg-red-500' : up.phase === 'done' ? 'bg-green-500' : 'bg-nvidia'"
             :style="{ width: `${up.percent}%` }"
           />
         </div>
         <div class="flex items-center justify-between text-xs text-gray-500">
-          <span>{{ formatSize(up.loaded || 0) }} / {{ formatSize(up.totalSize || 0) }}</span>
-          <div class="flex items-center gap-3">
-            <span v-if="!up.done && up.speed">{{ formatSpeed(up.speed) }}</span>
-            <span v-if="!up.done && up.eta">{{ up.eta }}</span>
-          </div>
+          <template v-if="up.phase === 'uploading'">
+            <span>{{ formatSize(up.loaded || 0) }} / {{ formatSize(up.totalSize || 0) }}</span>
+            <div class="flex items-center gap-3">
+              <span v-if="up.speed">{{ formatSpeed(up.speed) }}</span>
+              <span v-if="up.eta">{{ up.eta }}</span>
+            </div>
+          </template>
+          <template v-else-if="up.phase === 'saving'">
+            <span>{{ formatSize(up.totalSize || 0) }} received, writing via SFTP...</span>
+          </template>
+          <template v-else>
+            <span>{{ formatSize(up.totalSize || 0) }}</span>
+          </template>
         </div>
         <div v-if="up.error" class="mt-2 text-xs text-red-400">{{ up.error }}</div>
       </div>
@@ -789,4 +811,13 @@ async function uploadFiles(files) {
 <style scoped>
 .fade-enter-active, .fade-leave-active { transition: opacity 0.15s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+
+@keyframes progress-indeterminate {
+  0%   { width: 20%; margin-left: 0; }
+  50%  { width: 40%; margin-left: 30%; }
+  100% { width: 20%; margin-left: 80%; }
+}
+.animate-progress-indeterminate {
+  animation: progress-indeterminate 1.5s ease-in-out infinite;
+}
 </style>
