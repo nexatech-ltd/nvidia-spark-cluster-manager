@@ -3,10 +3,13 @@
   ansible.builtin.apt:
     name:
       - qemu-kvm
+      - qemu-efi-aarch64
       - libvirt-daemon-system
       - libvirt-clients
       - virtinst
       - ovmf
+      - libosinfo-bin
+      - gir1.2-libosinfo-1.0
     state: present
 
 - name: Add user to libvirt and kvm groups
@@ -20,6 +23,31 @@
     name: libvirtd
     enabled: true
     state: started
+
+- name: Set libvirt images directory ownership and permissions
+  ansible.builtin.file:
+    path: /var/lib/libvirt/images
+    state: directory
+    owner: root
+    group: libvirt
+    mode: "0775"
+
+- name: Create QEMU config directory
+  ansible.builtin.file:
+    path: /etc/qemu
+    state: directory
+    mode: "0755"
+
+- name: Configure QEMU bridge helper (allow virbr0)
+  ansible.builtin.copy:
+    dest: /etc/qemu/bridge.conf
+    content: "allow virbr0\n"
+    mode: "0644"
+
+- name: Set setuid on qemu-bridge-helper for user-session networking
+  ansible.builtin.file:
+    path: /usr/lib/qemu/qemu-bridge-helper
+    mode: "4755"
 
 - name: Create ISO directory
   ansible.builtin.file:

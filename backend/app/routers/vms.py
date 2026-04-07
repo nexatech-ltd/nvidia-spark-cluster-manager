@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+from shlex import quote as _shlex_quote
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile
 
@@ -71,14 +72,50 @@ async def upload_iso(file: UploadFile, node: str | None = Query(None)):
 # ── OS Variants (must be before /{name} catch-all) ───────────────────────
 
 
+_OSINFO_ARM_SCRIPT = r"""
+import gi
+gi.require_version('Libosinfo', '1.0')
+from gi.repository import Libosinfo
+loader = Libosinfo.Loader()
+loader.process_default_path()
+db = loader.get_db()
+os_list = db.get_os_list()
+ids = set()
+for i in range(os_list.get_length()):
+    o = os_list.get_nth(i)
+    sid = o.get_short_id()
+    for getter in (o.get_tree_list, o.get_image_list):
+        lst = getter()
+        for j in range(lst.get_length()):
+            if lst.get_nth(j).get_architecture() == 'aarch64':
+                ids.add(sid)
+                break
+for sid in sorted(ids):
+    print(sid)
+""".strip()
+
+_ARM_EXTRAS = ["win10", "win11", "generic"]
+
+
 @router.get("/os-variants/")
 async def list_os_variants(node: str = Query("spark-1")):
+    """Return OS variants that support aarch64 on the target node."""
+    host = node_service._host_for_node(node)
     try:
-        host = node_service._host_for_node(node)
-        rc, stdout, _ = await node_service.ssh_run(host, "virt-install --osinfo list 2>&1")
-        if rc != 0:
-            return []
-        return [v.strip() for v in stdout.strip().split("\n") if v.strip()]
+        rc, stdout, _ = await node_service.ssh_run(
+            host, f"python3 -c {_shlex_quote(_OSINFO_ARM_SCRIPT)}",
+        )
+        if rc == 0 and stdout.strip():
+            variants = [v.strip() for v in stdout.strip().split("\n") if v.strip()]
+        else:
+            rc2, stdout2, _ = await node_service.ssh_run(
+                host, "virt-install --osinfo list 2>&1",
+            )
+            variants = [v.strip() for v in stdout2.strip().split("\n") if v.strip()] if rc2 == 0 else []
+        for extra in _ARM_EXTRAS:
+            if extra not in variants:
+                variants.append(extra)
+        return variants
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -174,9 +211,11 @@ async def list_vms(node: str | None = Query(None)):
 
 @router.post("/", response_model=dict)
 async def create_vm(params: VMCreate):
-    cmd = libvirt_service.build_virt_install_cmd(params)
     host = node_service._host_for_node(params.node)
-    logger.info("Creating VM on %s: %s", params.node, cmd)
+    _, arch_out, _ = await node_service.ssh_run(host, "uname -m")
+    host_arch = arch_out.strip() or "aarch64"
+    cmd = libvirt_service.build_virt_install_cmd(params, host_arch=host_arch)
+    logger.info("Creating VM on %s (%s): %s", params.node, host_arch, cmd)
     rc, stdout, stderr = await node_service.ssh_run(host, cmd)
     if rc != 0:
         raise HTTPException(status_code=500, detail=f"virt-install failed: {stderr.strip()}")

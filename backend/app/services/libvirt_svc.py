@@ -136,23 +136,34 @@ class LibvirtService:
 
     # ── VM creation ──────────────────────────────────────────────────────
 
-    def build_virt_install_cmd(self, params: VMCreate) -> str:
+    def build_virt_install_cmd(self, params: VMCreate, host_arch: str = "aarch64") -> str:
         """Build the virt-install shell command to run on the target node."""
         disk_path = os.path.join(
             settings.vm_storage_path, f"{params.name}.{params.disk_format}",
         )
 
+        is_arm = host_arch in ("aarch64", "arm64")
+
         parts = [
-            "virt-install",
+            "sudo virt-install",
+            "--connect qemu:///system",
             f"--name {params.name}",
             f"--vcpus {params.vcpus}",
             f"--memory {params.memory_mb}",
-            f"--disk path={disk_path},size={params.disk_size_gb},format={params.disk_format}",
-            f"--network bridge={params.network}",
+            f"--disk path={disk_path},size={params.disk_size_gb},format={params.disk_format},bus=virtio",
+            f"--network bridge={params.network},model=virtio",
             "--graphics vnc,listen=0.0.0.0",
             f"--os-variant {params.os_variant}",
             "--noautoconsole",
         ]
+
+        if is_arm:
+            parts += [
+                "--arch aarch64",
+                "--machine virt",
+                "--boot uefi",
+                "--features hyperv=off",
+            ]
 
         if params.iso:
             iso_path = params.iso if params.iso.startswith("/") else os.path.join(settings.iso_storage_path, params.iso)
