@@ -7,7 +7,7 @@ const router = useRouter()
 const { get, post } = useApi()
 
 const MEMORY_PRESETS = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
-const DISK_BUS_OPTIONS = ['virtio', 'sata', 'scsi', 'ide']
+const DISK_BUS_OPTIONS = ['virtio', 'scsi']
 const NIC_MODEL_OPTIONS = ['virtio', 'e1000e', 'e1000', 'rtl8139']
 
 const nodes = ref([])
@@ -312,7 +312,7 @@ function formatBytes(bytes) {
                   : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'"
               >{{ bus }}</button>
             </div>
-            <p v-if="hwFamily === 'windows'" class="text-xs text-amber-400/80 mt-1">Windows requires sata/scsi (no VirtIO drivers)</p>
+            <p class="text-xs text-gray-500 mt-1">ARM UEFI requires virtio (sata/ide auto-corrected)</p>
           </div>
           <div>
             <label class="block text-xs text-gray-400 mb-1">NIC Model</label>

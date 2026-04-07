@@ -165,11 +165,13 @@ class LibvirtService:
 
     # ── Hardware profiles per OS family ──────────────────────────────────
 
+    # On aarch64 virt machine, UEFI firmware only has VirtIO storage drivers;
+    # SATA/IDE are invisible to UEFI.  Use virtio for all OS families.
     _HW_PROFILES = {
-        "windows": {"disk_bus": "sata", "nic_model": "e1000e", "tpm": True},
+        "windows": {"disk_bus": "virtio", "nic_model": "e1000e", "tpm": True},
         "linux":   {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False},
         "freebsd": {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False},
-        "macos":   {"disk_bus": "sata", "nic_model": "e1000e", "tpm": False},
+        "macos":   {"disk_bus": "virtio", "nic_model": "e1000e", "tpm": False},
         "generic": {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False},
     }
 
@@ -210,6 +212,10 @@ class LibvirtService:
 
         disk_bus = params.disk_bus or "virtio"
         nic_model = params.nic_model or "virtio"
+
+        if is_arm and disk_bus in ("sata", "ide"):
+            logger.warning("Overriding disk_bus=%s to virtio (UEFI on aarch64 virt has no SATA/IDE drivers)", disk_bus)
+            disk_bus = "virtio"
 
         is_windows = params.os_variant.lower().startswith("win")
 
