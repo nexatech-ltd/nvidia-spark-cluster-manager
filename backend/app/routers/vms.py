@@ -46,6 +46,21 @@ async def upload_iso(file: UploadFile, node: str | None = Query(None)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── OS Variants (must be before /{name} catch-all) ───────────────────────
+
+
+@router.get("/os-variants/")
+async def list_os_variants(node: str = Query("spark-1")):
+    try:
+        host = node_service._host_for_node(node)
+        rc, stdout, _ = await node_service.ssh_run(host, "virt-install --osinfo list 2>&1")
+        if rc != 0:
+            return []
+        return [v.strip() for v in stdout.strip().split("\n") if v.strip()]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Bridges (must be before /{name} catch-all) ───────────────────────────
 
 

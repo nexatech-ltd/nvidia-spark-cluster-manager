@@ -8,27 +8,13 @@ const { get, post } = useApi()
 
 const MEMORY_PRESETS = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
 
-const OS_VARIANTS = [
-  { value: 'ubuntu24.04', label: 'Ubuntu 24.04 LTS' },
-  { value: 'ubuntu22.04', label: 'Ubuntu 22.04 LTS' },
-  { value: 'ubuntu20.04', label: 'Ubuntu 20.04 LTS' },
-  { value: 'debian12',    label: 'Debian 12 (Bookworm)' },
-  { value: 'debian11',    label: 'Debian 11 (Bullseye)' },
-  { value: 'fedora40',    label: 'Fedora 40' },
-  { value: 'centos-stream9', label: 'CentOS Stream 9' },
-  { value: 'almalinux9',  label: 'AlmaLinux 9' },
-  { value: 'rocky9',      label: 'Rocky Linux 9' },
-  { value: 'win11',       label: 'Windows 11' },
-  { value: 'win10',       label: 'Windows 10' },
-  { value: 'freebsd14.0', label: 'FreeBSD 14' },
-  { value: 'generic',     label: 'Generic / Other' },
-]
-
 const nodes = ref([])
 const isos = ref([])
 const bridges = ref([])
+const osVariants = ref([])
 const isosLoading = ref(false)
 const bridgesLoading = ref(false)
+const osVariantsLoading = ref(false)
 const submitting = ref(false)
 const error = ref('')
 const osSearch = ref('')
@@ -48,13 +34,8 @@ const form = ref({
 
 const filteredVariants = computed(() => {
   const q = osSearch.value.toLowerCase()
-  if (!q) return OS_VARIANTS
-  return OS_VARIANTS.filter(v => v.value.includes(q) || v.label.toLowerCase().includes(q))
-})
-
-const selectedOsLabel = computed(() => {
-  const found = OS_VARIANTS.find(v => v.value === form.value.os_variant)
-  return found ? found.label : form.value.os_variant
+  if (!q) return osVariants.value
+  return osVariants.value.filter(v => v.toLowerCase().includes(q))
 })
 
 async function fetchNodes() {
@@ -86,11 +67,20 @@ async function fetchBridges() {
   bridgesLoading.value = false
 }
 
+async function fetchOsVariants() {
+  osVariantsLoading.value = true
+  try {
+    osVariants.value = await get(`/vms/os-variants/?node=${form.value.node}`)
+  } catch { /* ignore */ }
+  osVariantsLoading.value = false
+}
+
 watch(() => form.value.node, (val) => {
   if (val) {
     form.value.iso = ''
     fetchISOs()
     fetchBridges()
+    fetchOsVariants()
   }
 })
 
@@ -99,6 +89,7 @@ onMounted(async () => {
   if (form.value.node) {
     fetchISOs()
     fetchBridges()
+    fetchOsVariants()
   }
 })
 
@@ -306,36 +297,36 @@ function formatBytes(bytes) {
             @click="osDropdownOpen = !osDropdownOpen"
             class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-left text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50 flex items-center justify-between"
           >
-            <span>{{ selectedOsLabel }}</span>
+            <span>{{ form.os_variant }}</span>
             <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
             </svg>
           </button>
           <div
             v-if="osDropdownOpen"
-            class="absolute z-20 mt-1 w-full bg-gray-800 border border-gray-600 rounded-lg shadow-xl max-h-56 overflow-hidden flex flex-col"
+            class="absolute z-20 mt-1 w-full bg-gray-800 border border-gray-600 rounded-lg shadow-xl max-h-64 overflow-hidden flex flex-col"
           >
             <input
               v-model="osSearch"
-              placeholder="Search OS..."
+              placeholder="Search OS variant..."
               class="px-3 py-2 bg-gray-750 border-b border-gray-600 text-sm text-gray-100 focus:outline-none placeholder-gray-500"
             />
-            <ul class="overflow-y-auto max-h-48">
+            <ul class="overflow-y-auto max-h-56">
               <li
                 v-for="v in filteredVariants"
-                :key="v.value"
-                @click="selectOsVariant(v.value)"
-                class="px-3 py-2 text-sm cursor-pointer transition-colors"
-                :class="form.os_variant === v.value
+                :key="v"
+                @click="selectOsVariant(v)"
+                class="px-3 py-1.5 text-sm cursor-pointer transition-colors"
+                :class="form.os_variant === v
                   ? 'bg-nvidia/10 text-nvidia'
                   : 'text-gray-300 hover:bg-gray-700'"
               >
-                <span class="font-medium">{{ v.label }}</span>
-                <span class="text-gray-500 ml-1.5 text-xs">{{ v.value }}</span>
+                {{ v }}
               </li>
               <li v-if="!filteredVariants.length" class="px-3 py-2 text-sm text-gray-500">No match</li>
             </ul>
           </div>
+          <p v-if="osVariantsLoading" class="text-xs text-gray-500 mt-1">Loading variants...</p>
         </div>
       </div>
 
@@ -356,7 +347,7 @@ function formatBytes(bytes) {
           <span class="text-gray-500">Network:</span>
           <span class="text-gray-200">{{ form.network || '—' }}</span>
           <span class="text-gray-500">OS:</span>
-          <span class="text-gray-200">{{ selectedOsLabel }}</span>
+          <span class="text-gray-200">{{ form.os_variant }}</span>
         </div>
       </div>
 
