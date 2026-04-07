@@ -6,7 +6,7 @@ import VncConsole from '../components/VncConsole.vue'
 
 const route = useRoute()
 const router = useRouter()
-const { get, post, del } = useApi()
+const { get, post, put, del } = useApi()
 
 const vmName = computed(() => route.params.name)
 const node = computed(() => route.query.node || '')
@@ -244,6 +244,64 @@ function currentISO() {
   return cdrom?.source || null
 }
 
+// ── Boot order ───────────────────────────────────────────────────────────
+
+const bootOrder = ref([])
+const bootSaving = ref(false)
+const cdromLoading = ref('')
+
+const BOOT_LABELS = { hd: 'Hard Disk', cdrom: 'CD-ROM', network: 'Network (PXE)', fd: 'Floppy' }
+
+function initBootOrder() {
+  if (vm.value?.boot_order?.length) {
+    bootOrder.value = [...vm.value.boot_order]
+  }
+}
+
+function moveBootDevice(idx, dir) {
+  const target = idx + dir
+  if (target < 0 || target >= bootOrder.value.length) return
+  const arr = [...bootOrder.value]
+  ;[arr[idx], arr[target]] = [arr[target], arr[idx]]
+  bootOrder.value = arr
+}
+
+async function saveBootOrder() {
+  bootSaving.value = true
+  try {
+    await put(`/vms/${vmName.value}/boot?node=${node.value}`, { order: bootOrder.value })
+    await fetchVM()
+    initBootOrder()
+  } catch (e) {
+    error.value = e.message || 'Failed to save boot order'
+  }
+  bootSaving.value = false
+}
+
+async function ejectCdrom() {
+  cdromLoading.value = 'eject'
+  try {
+    await post(`/vms/${vmName.value}/cdrom?node=${node.value}`, { iso: null })
+    await fetchVM()
+  } catch (e) {
+    error.value = e.message || 'Failed to eject CDROM'
+  }
+  cdromLoading.value = ''
+}
+
+async function insertCdrom() {
+  if (!selectedIso.value) return
+  cdromLoading.value = 'insert'
+  try {
+    await post(`/vms/${vmName.value}/cdrom?node=${node.value}`, { iso: selectedIso.value })
+    await fetchVM()
+    selectedIso.value = ''
+  } catch (e) {
+    error.value = e.message || 'Failed to insert ISO'
+  }
+  cdromLoading.value = ''
+}
+
 // ── Tab switching data loads ─────────────────────────────────────────────
 
 watch(activeTab, (tab) => {
@@ -252,7 +310,10 @@ watch(activeTab, (tab) => {
     fetchPoolDisks()
     fetchPools()
   }
-  if (tab === 'info') fetchISOs()
+  if (tab === 'info') {
+    fetchISOs()
+    initBootOrder()
+  }
 })
 
 const actionButtons = computed(() => {
@@ -471,28 +532,91 @@ const actionButtons = computed(() => {
           </div>
         </div>
 
-        <!-- ISO / CD-ROM -->
+        <!-- Boot Order -->
         <div class="bg-gray-800 rounded-xl border border-gray-700 p-6">
-          <h3 class="text-sm font-semibold text-gray-300 mb-4">CD-ROM / ISO</h3>
-          <div class="flex items-center gap-3 text-sm">
-            <span class="text-gray-400">Current:</span>
-            <span class="text-gray-200 font-mono text-xs">{{ currentISO() || '(none)' }}</span>
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-semibold text-gray-300">Boot Order</h3>
+            <button
+              @click="saveBootOrder"
+              :disabled="bootSaving"
+              class="px-3 py-1 text-xs rounded-md bg-nvidia/10 text-nvidia border border-nvidia/30 hover:bg-nvidia/20 transition-colors disabled:opacity-50"
+            >
+              {{ bootSaving ? 'Saving...' : 'Save' }}
+            </button>
           </div>
-          <div v-if="isos.length" class="mt-3">
-            <label class="block text-xs text-gray-500 mb-1">Available ISOs on {{ node }}</label>
-            <div class="space-y-1">
-              <div
-                v-for="iso in isos"
-                :key="iso.name"
-                class="flex items-center justify-between bg-gray-900/50 rounded-lg px-3 py-2 text-sm"
-              >
-                <span class="text-gray-300 truncate">{{ iso.name }}</span>
-                <span class="text-gray-500 text-xs shrink-0 ml-2">{{ formatBytes(iso.size) }}</span>
+          <div v-if="bootOrder.length" class="space-y-1.5">
+            <div
+              v-for="(dev, idx) in bootOrder"
+              :key="dev"
+              class="flex items-center gap-3 bg-gray-900/50 rounded-lg px-3 py-2.5"
+            >
+              <span class="text-xs text-gray-500 w-5 text-right shrink-0">{{ idx + 1 }}.</span>
+              <span
+                class="px-2 py-0.5 text-xs rounded border shrink-0"
+                :class="dev === 'cdrom'
+                  ? 'bg-purple-500/15 text-purple-400 border-purple-500/30'
+                  : dev === 'hd'
+                    ? 'bg-blue-500/15 text-blue-400 border-blue-500/30'
+                    : 'bg-gray-500/15 text-gray-400 border-gray-500/30'"
+              >{{ dev }}</span>
+              <span class="text-sm text-gray-300 flex-1">{{ BOOT_LABELS[dev] || dev }}</span>
+              <div class="flex gap-1 shrink-0">
+                <button
+                  @click="moveBootDevice(idx, -1)"
+                  :disabled="idx === 0"
+                  class="p-1 rounded hover:bg-gray-700 text-gray-400 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                  title="Move up"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
+                </button>
+                <button
+                  @click="moveBootDevice(idx, 1)"
+                  :disabled="idx === bootOrder.length - 1"
+                  class="p-1 rounded hover:bg-gray-700 text-gray-400 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                  title="Move down"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </button>
               </div>
             </div>
           </div>
-          <div v-else-if="isosLoading" class="mt-3 text-xs text-gray-500">Loading ISOs...</div>
-          <div v-else class="mt-3 text-xs text-gray-500">No ISOs available on this node</div>
+          <p v-else class="text-sm text-gray-500">No boot devices configured</p>
+        </div>
+
+        <!-- CD-ROM / ISO -->
+        <div class="bg-gray-800 rounded-xl border border-gray-700 p-6">
+          <h3 class="text-sm font-semibold text-gray-300 mb-4">CD-ROM</h3>
+          <div class="flex items-center gap-3 text-sm mb-3">
+            <span class="text-gray-400 shrink-0">Current:</span>
+            <span class="text-gray-200 font-mono text-xs truncate">{{ currentISO() || '(empty)' }}</span>
+            <button
+              v-if="currentISO()"
+              @click="ejectCdrom"
+              :disabled="cdromLoading === 'eject'"
+              class="ml-auto px-2.5 py-1 text-xs rounded-md bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50 shrink-0"
+            >
+              {{ cdromLoading === 'eject' ? 'Ejecting...' : 'Eject' }}
+            </button>
+          </div>
+          <div class="flex items-center gap-2">
+            <select
+              v-model="selectedIso"
+              class="flex-1 bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50"
+            >
+              <option value="">Select ISO...</option>
+              <option v-for="iso in isos" :key="iso.path" :value="iso.path">
+                {{ iso.name }} ({{ formatBytes(iso.size) }})
+              </option>
+            </select>
+            <button
+              @click="insertCdrom"
+              :disabled="!selectedIso || cdromLoading === 'insert'"
+              class="px-3 py-2 text-xs rounded-lg bg-nvidia/10 text-nvidia border border-nvidia/30 hover:bg-nvidia/20 transition-colors disabled:opacity-50 shrink-0"
+            >
+              {{ cdromLoading === 'insert' ? 'Inserting...' : 'Insert' }}
+            </button>
+          </div>
+          <p v-if="isosLoading" class="text-xs text-gray-500 mt-2">Loading ISOs...</p>
         </div>
       </div>
 

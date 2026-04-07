@@ -96,6 +96,8 @@ class LibvirtService:
             if port_str and port_str != "-1":
                 vnc_port = int(port_str)
 
+        boot_order = [el.get("dev") for el in root.findall(".//os/boot") if el.get("dev")]
+
         state_id, _ = dom.state()
 
         return {
@@ -108,6 +110,7 @@ class LibvirtService:
             "vnc_port": vnc_port,
             "autostart": bool(dom.autostart()),
             "node": node,
+            "boot_order": boot_order,
         }
 
     # ── VM listing ───────────────────────────────────────────────────────

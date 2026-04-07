@@ -23,6 +23,7 @@ class VMInfo(BaseModel):
     vnc_port: int | None = None
     autostart: bool = False
     node: str = ""
+    boot_order: list[str] = []
 
 
 class VMAction(BaseModel):

@@ -371,6 +371,74 @@ async def detach_disk(name: str, body: dict, node: str | None = Query(None)):
     return {"message": f"Disk '{disk_path}' detached from VM '{name}'"}
 
 
+# ── Boot order ────────────────────────────────────────────────────────────
+
+
+@router.get("/{name}/boot")
+async def get_boot_order(name: str, node: str = Query(...)):
+    """Return the current boot device order from VM XML."""
+    host = node_service._host_for_node(node)
+    rc, stdout, stderr = await node_service.ssh_run(
+        host, f"sudo virsh dumpxml {name} 2>&1",
+    )
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=stderr.strip())
+    import re
+    order = re.findall(r"<boot dev=['\"](\w+)['\"]", stdout)
+    return {"order": order}
+
+
+@router.put("/{name}/boot")
+async def set_boot_order(name: str, body: dict, node: str = Query(...)):
+    """Set boot device order via virt-xml --boot."""
+    order = body.get("order", [])
+    if not order:
+        raise HTTPException(status_code=400, detail="Boot order list is required")
+    order_csv = ",".join(order)
+    host = node_service._host_for_node(node)
+    cmd = f"sudo virt-xml {name} --connect qemu:///system --edit --boot {order_csv}"
+    rc, stdout, stderr = await node_service.ssh_run(host, cmd)
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=f"Failed to set boot order: {stderr.strip()}")
+    return {"message": f"Boot order set to {order}", "stdout": stdout}
+
+
+@router.post("/{name}/cdrom")
+async def change_cdrom(name: str, body: dict, node: str = Query(...)):
+    """Change or eject the CDROM ISO."""
+    iso_path = body.get("iso")
+    host = node_service._host_for_node(node)
+    # Find the CDROM target device from VM XML
+    rc, stdout, _ = await node_service.ssh_run(
+        host, f"sudo virsh domblklist {name} --details 2>&1",
+    )
+    cdrom_target = None
+    if rc == 0:
+        for line in stdout.strip().split("\n"):
+            if "cdrom" in line.lower():
+                parts = line.split()
+                if len(parts) >= 2:
+                    cdrom_target = parts[1]
+                    break
+    if not cdrom_target:
+        raise HTTPException(status_code=404, detail="No CDROM device found on this VM")
+
+    if iso_path:
+        cmd = f"sudo virsh change-media {name} {cdrom_target} '{iso_path}' --config"
+        if body.get("live", True):
+            cmd += " --live"
+    else:
+        cmd = f"sudo virsh change-media {name} {cdrom_target} --eject --config"
+        if body.get("live", True):
+            cmd += " --live"
+
+    rc, stdout, stderr = await node_service.ssh_run(host, cmd)
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=f"CDROM operation failed: {stderr.strip()}")
+    action = "ejected" if not iso_path else f"changed to {os.path.basename(iso_path)}"
+    return {"message": f"CDROM {action}", "stdout": stdout}
+
+
 # ── Autostart ────────────────────────────────────────────────────────────
 
 
