@@ -170,20 +170,40 @@ async def list_disks(
     pool: str = Query("default"),
     node: str | None = Query(None),
 ):
+    target = node or settings.node1_hostname
+    host = node_service._host_for_node(target)
+    cmd = f"sudo virsh vol-list {pool} --details 2>/dev/null"
     try:
-        return await asyncio.to_thread(libvirt_service.list_disks, pool, node)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        rc, stdout, stderr = await node_service.ssh_run(host, cmd)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    if rc != 0:
+        raise HTTPException(status_code=404, detail=f"Storage pool '{pool}' not found on {target}")
+    disks = []
+    for line in stdout.strip().split("\n")[2:]:
+        parts = line.split()
+        if len(parts) >= 5:
+            name = parts[0]
+            path = parts[1]
+            fmt = parts[3] if len(parts) > 3 else "raw"
+            try:
+                size = int(float(parts[4]) * {"bytes": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4}.get(parts[5], 1)) if len(parts) > 5 else 0
+            except (ValueError, IndexError):
+                size = 0
+            disks.append({"name": name, "size": size, "format": fmt, "path": path, "pool": pool})
+    return disks
 
 
 @router.post("/disks/")
 async def create_disk(params: DiskCreate, node: str | None = Query(None)):
-    try:
-        return await asyncio.to_thread(libvirt_service.create_disk, params, node)
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    target = node or settings.node1_hostname
+    host = node_service._host_for_node(target)
+    size_str = f"{params.size_gb}G"
+    cmd = f"sudo virsh vol-create-as {params.pool} {params.name} {size_str} --format {params.format}"
+    rc, stdout, stderr = await node_service.ssh_run(host, cmd)
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=f"Failed to create disk: {stderr.strip()}")
+    return {"message": f"Disk '{params.name}' created in pool '{params.pool}'"}
 
 
 # ── Storage Pools (must be before /{name} catch-all) ─────────────────────
@@ -317,12 +337,14 @@ async def attach_disk(name: str, body: dict, node: str | None = Query(None)):
     disk_path = body.get("path")
     if not disk_path:
         raise HTTPException(status_code=400, detail="Disk path is required")
-    try:
-        return await asyncio.to_thread(
-            libvirt_service.attach_disk, name, disk_path, node,
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    target = node or settings.node1_hostname
+    host = node_service._host_for_node(target)
+    target_dev = await asyncio.to_thread(libvirt_service._next_disk_target, name, target)
+    cmd = f"sudo virsh attach-disk {name} {disk_path} {target_dev} --persistent --subdriver qcow2"
+    rc, _, stderr = await node_service.ssh_run(host, cmd)
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=f"Failed to attach disk: {stderr.strip()}")
+    return {"message": f"Disk '{disk_path}' attached to VM '{name}' as {target_dev}"}
 
 
 @router.post("/{name}/disks/detach")
@@ -330,12 +352,13 @@ async def detach_disk(name: str, body: dict, node: str | None = Query(None)):
     disk_path = body.get("path")
     if not disk_path:
         raise HTTPException(status_code=400, detail="Disk path is required")
-    try:
-        return await asyncio.to_thread(
-            libvirt_service.detach_disk, name, disk_path, node,
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    target = node or settings.node1_hostname
+    host = node_service._host_for_node(target)
+    cmd = f"sudo virsh detach-disk {name} {disk_path} --persistent"
+    rc, _, stderr = await node_service.ssh_run(host, cmd)
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=f"Failed to detach disk: {stderr.strip()}")
+    return {"message": f"Disk '{disk_path}' detached from VM '{name}'"}
 
 
 # ── Autostart ────────────────────────────────────────────────────────────
