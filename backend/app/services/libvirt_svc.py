@@ -285,12 +285,9 @@ class LibvirtService:
             mach = machine_type or "pc"
             type_el = ET.SubElement(os_el, "type", arch="x86_64", machine=mach)
         type_el.text = "hvm"
-        # Per-device boot order is set below on disk elements when drivers ISO
-        # is present; otherwise use OS-level boot entries.
-        if not params.drivers_iso:
-            if params.iso:
-                ET.SubElement(os_el, "boot", dev="cdrom")
-            ET.SubElement(os_el, "boot", dev="hd")
+        if params.iso:
+            ET.SubElement(os_el, "boot", dev="cdrom")
+        ET.SubElement(os_el, "boot", dev="hd")
 
         # ── Features ──
         features = ET.SubElement(domain, "features")
@@ -329,14 +326,11 @@ class LibvirtService:
             ET.SubElement(devices, "controller", type="sata", index="0")
 
         # Primary disk
-        _use_dev_boot = bool(params.drivers_iso)
         disk_target = "vda" if disk_bus == "virtio" else "sda"
         disk_el = ET.SubElement(devices, "disk", type="file", device="disk")
         ET.SubElement(disk_el, "driver", name="qemu", type=params.disk_format, cache="writeback")
         ET.SubElement(disk_el, "source", file=disk_path)
         ET.SubElement(disk_el, "target", dev=disk_target, bus=disk_bus)
-        if _use_dev_boot:
-            ET.SubElement(disk_el, "boot", order="2")
 
         # Boot ISO (SCSI on ARM, IDE on x86)
         if params.iso:
@@ -352,8 +346,6 @@ class LibvirtService:
             else:
                 ET.SubElement(cdrom_el, "target", dev="hda", bus="ide")
             ET.SubElement(cdrom_el, "readonly")
-            if _use_dev_boot:
-                ET.SubElement(cdrom_el, "boot", order="1")
 
         # Drivers ISO via SATA/AHCI — no boot order (data only, not bootable)
         if params.drivers_iso:
