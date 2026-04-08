@@ -330,25 +330,34 @@ class LibvirtService:
         ET.SubElement(disk_el, "source", file=disk_path)
         ET.SubElement(disk_el, "target", dev=disk_target, bus=disk_bus)
 
-        # CDROMs
-        _scsi_lun = 0
-        for iso_src in (params.iso, params.drivers_iso):
-            if not iso_src:
-                continue
-            iso_path = iso_src if iso_src.startswith("/") else os.path.join(
-                settings.iso_storage_path, iso_src,
+        # Boot ISO (SCSI on ARM, IDE on x86)
+        if params.iso:
+            iso_path = params.iso if params.iso.startswith("/") else os.path.join(
+                settings.iso_storage_path, params.iso,
             )
             cdrom_el = ET.SubElement(devices, "disk", type="file", device="cdrom")
             ET.SubElement(cdrom_el, "driver", name="qemu", type="raw")
             ET.SubElement(cdrom_el, "source", file=iso_path)
             if is_arm:
-                cdrom_dev = f"sd{'abcdefgh'[_scsi_lun + (1 if disk_bus != 'scsi' else 0)]}"
+                cdrom_dev = "sdb" if disk_bus != "scsi" else "sda"
                 ET.SubElement(cdrom_el, "target", dev=cdrom_dev, bus="scsi")
             else:
-                cdrom_dev = f"hd{'abcd'[_scsi_lun]}"
-                ET.SubElement(cdrom_el, "target", dev=cdrom_dev, bus="ide")
+                ET.SubElement(cdrom_el, "target", dev="hda", bus="ide")
             ET.SubElement(cdrom_el, "readonly")
-            _scsi_lun += 1
+
+        # Drivers ISO via USB so WinPE can see it without VirtIO drivers
+        if params.drivers_iso:
+            drv_path = params.drivers_iso if params.drivers_iso.startswith("/") else os.path.join(
+                settings.iso_storage_path, params.drivers_iso,
+            )
+            drv_el = ET.SubElement(devices, "disk", type="file", device="cdrom")
+            ET.SubElement(drv_el, "driver", name="qemu", type="raw")
+            ET.SubElement(drv_el, "source", file=drv_path)
+            if is_arm:
+                ET.SubElement(drv_el, "target", dev="sdc", bus="usb")
+            else:
+                ET.SubElement(drv_el, "target", dev="hdb", bus="ide")
+            ET.SubElement(drv_el, "readonly")
 
         # Network
         if params.network_type == "network":
