@@ -255,14 +255,22 @@ class LibvirtService:
         os_el = ET.SubElement(domain, "os")
         use_uefi = params.bios == "uefi" or is_arm
 
-        if use_uefi and sb_enabled and is_arm:
-            # Explicit pflash with Microsoft pre-enrolled Secure Boot keys
+        if use_uefi and is_arm and sb_enabled:
+            # pflash with Microsoft pre-enrolled Secure Boot keys (Windows 11)
             loader = ET.SubElement(
                 os_el, "loader",
                 readonly="yes", type="pflash",
             )
             loader.text = "/usr/share/AAVMF/AAVMF_CODE.ms.fd"
             ET.SubElement(os_el, "nvram", template="/usr/share/AAVMF/AAVMF_VARS.ms.fd")
+        elif use_uefi and is_arm:
+            # pflash without Secure Boot (Linux / generic ARM)
+            loader = ET.SubElement(
+                os_el, "loader",
+                readonly="yes", type="pflash",
+            )
+            loader.text = "/usr/share/AAVMF/AAVMF_CODE.fd"
+            ET.SubElement(os_el, "nvram", template="/usr/share/AAVMF/AAVMF_VARS.fd")
         elif use_uefi and sb_enabled and not is_arm:
             os_el.set("firmware", "efi")
             fw = ET.SubElement(os_el, "firmware")
@@ -351,12 +359,13 @@ class LibvirtService:
         gfx.set("listen", "0.0.0.0")
         ET.SubElement(gfx, "listen", type="address", address="0.0.0.0")
 
-        # Video — ramfb fallback needed for Windows ARM before VirtIO GPU drivers
-        if is_windows and is_arm and params.iso:
-            fb = ET.SubElement(devices, "video")
-            ET.SubElement(fb, "model", type="ramfb")
-        vid = ET.SubElement(devices, "video")
-        ET.SubElement(vid, "model", type=video_model, heads="1")
+        # Video — virtio-gpu-pci hangs UEFI on ARM+Windows; use ramfb only
+        if is_windows and is_arm:
+            vid = ET.SubElement(devices, "video")
+            ET.SubElement(vid, "model", type="ramfb")
+        else:
+            vid = ET.SubElement(devices, "video")
+            ET.SubElement(vid, "model", type=video_model, heads="1")
 
         # Console / serial
         console = ET.SubElement(devices, "console", type="pty")
