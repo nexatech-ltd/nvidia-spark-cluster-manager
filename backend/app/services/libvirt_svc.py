@@ -383,13 +383,11 @@ class LibvirtService:
         gfx.set("listen", "0.0.0.0")
         ET.SubElement(gfx, "listen", type="address", address="0.0.0.0")
 
-        # Video — UEFI on ARM only has GOP for ramfb and virtio-gpu-pci.
-        # virtio-gpu-pci alone hangs Windows boot; ramfb as primary fixes it.
+        # Video — virtio-gpu-pci causes Windows ARM boot to hang;
+        # ramfb is the only working display for Windows on ARM.
         if is_windows and is_arm:
-            fb = ET.SubElement(devices, "video")
-            ET.SubElement(fb, "model", type="ramfb")
             vid = ET.SubElement(devices, "video")
-            ET.SubElement(vid, "model", type="virtio", heads="1")
+            ET.SubElement(vid, "model", type="ramfb")
         else:
             vid = ET.SubElement(devices, "video")
             ET.SubElement(vid, "model", type=video_model, heads="1")
