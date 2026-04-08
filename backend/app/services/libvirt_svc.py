@@ -27,14 +27,14 @@ _STATE_MAP = {
 # ── Static OS type catalogue (Proxmox-style) ────────────────────────────
 
 _FAMILY_DEFAULTS = {
-    "windows": {"disk_bus": "virtio", "nic_model": "e1000e", "tpm": False, "video": "virtio"},
-    "linux":   {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False, "video": "virtio"},
-    "bsd":     {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False, "video": "virtio"},
-    "generic": {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False, "video": "virtio"},
+    "windows": {"disk_bus": "virtio", "nic_model": "e1000e", "tpm": False, "video": "virtio", "secure_boot": False},
+    "linux":   {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False, "video": "virtio", "secure_boot": False},
+    "bsd":     {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False, "video": "virtio", "secure_boot": False},
+    "generic": {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False, "video": "virtio", "secure_boot": False},
 }
 
 OS_TYPES: dict[str, dict] = {
-    "win11":          {"label": "Windows 11 / Server 2025",      "family": "windows", "tpm": True},
+    "win11":          {"label": "Windows 11 / Server 2025",      "family": "windows", "tpm": True, "secure_boot": True},
     "win10":          {"label": "Windows 10 / Server 2016-2019", "family": "windows"},
     "win8":           {"label": "Windows 8.x / Server 2012",     "family": "windows"},
     "win7":           {"label": "Windows 7 / Server 2008 R2",    "family": "windows"},
@@ -234,6 +234,7 @@ class LibvirtService:
         nic_model = params.nic_model or os_info.get("nic_model", "virtio")
         video_model = params.video or os_info.get("video", "virtio")
         tpm_enabled = params.tpm if params.tpm is not None else os_info.get("tpm", False)
+        sb_enabled = params.secure_boot or os_info.get("secure_boot", False)
 
         if is_arm and disk_bus in ("sata", "ide"):
             logger.warning("Overriding disk_bus=%s→virtio (ARM UEFI)", disk_bus)
@@ -252,8 +253,24 @@ class LibvirtService:
 
         # ── OS / firmware ──
         os_el = ET.SubElement(domain, "os")
-        if params.bios == "uefi" or is_arm:
+        use_uefi = params.bios == "uefi" or is_arm
+
+        if use_uefi and sb_enabled and is_arm:
+            # Explicit pflash with Microsoft pre-enrolled Secure Boot keys
+            loader = ET.SubElement(
+                os_el, "loader",
+                readonly="yes", type="pflash",
+            )
+            loader.text = "/usr/share/AAVMF/AAVMF_CODE.ms.fd"
+            ET.SubElement(os_el, "nvram", template="/usr/share/AAVMF/AAVMF_VARS.ms.fd")
+        elif use_uefi and sb_enabled and not is_arm:
             os_el.set("firmware", "efi")
+            fw = ET.SubElement(os_el, "firmware")
+            ET.SubElement(fw, "feature", enabled="yes", name="enrolled-keys")
+            ET.SubElement(fw, "feature", enabled="yes", name="secure-boot")
+        elif use_uefi:
+            os_el.set("firmware", "efi")
+
         if is_arm:
             type_el = ET.SubElement(os_el, "type", arch="aarch64", machine=machine_type)
         else:
@@ -296,10 +313,7 @@ class LibvirtService:
 
         # Controllers
         ET.SubElement(devices, "controller", type="scsi", model="virtio-scsi")
-        if is_arm:
-            ET.SubElement(devices, "controller", type="usb", model="ehci")
-        else:
-            ET.SubElement(devices, "controller", type="usb", model="qemu-xhci")
+        ET.SubElement(devices, "controller", type="usb", model="qemu-xhci")
 
         # Primary disk
         disk_target = "vda" if disk_bus == "virtio" else "sda"
@@ -337,7 +351,10 @@ class LibvirtService:
         gfx.set("listen", "0.0.0.0")
         ET.SubElement(gfx, "listen", type="address", address="0.0.0.0")
 
-        # Video
+        # Video — ramfb fallback needed for Windows ARM before VirtIO GPU drivers
+        if is_windows and is_arm and params.iso:
+            fb = ET.SubElement(devices, "video")
+            ET.SubElement(fb, "model", type="ramfb")
         vid = ET.SubElement(devices, "video")
         ET.SubElement(vid, "model", type=video_model, heads="1")
 

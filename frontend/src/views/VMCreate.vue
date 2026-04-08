@@ -130,6 +130,7 @@ async function selectOsVariant(variant) {
     if (profile.disk_bus) form.value.disk_bus = profile.disk_bus
     if (profile.nic_model) form.value.nic_model = profile.nic_model
     if (profile.tpm !== undefined) form.value.tpm = profile.tpm || null
+    if (profile.secure_boot !== undefined) form.value.secure_boot = !!profile.secure_boot
     hwFamily.value = profile.family || ''
   } catch { /* ignore */ }
 }
