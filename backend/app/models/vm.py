@@ -33,6 +33,7 @@ class VMCreate(BaseModel):
     # ── Media ──
     iso: str | None = None
     drivers_iso: str | None = None
+    cdrom_bus: str = "auto"  # auto | scsi | sata | ide
 
     # ── Display ──
     video: str = "virtio"  # virtio | std | qxl | cirrus | vmware | virtio-gl | none

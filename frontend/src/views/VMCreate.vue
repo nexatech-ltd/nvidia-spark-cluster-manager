@@ -44,6 +44,12 @@ const CPU_OPTIONS_X86 = [
   { value: 'kvm64', label: 'kvm64' },
   { value: 'qemu64', label: 'qemu64' },
 ]
+const CDROM_BUS_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'scsi', label: 'SCSI' },
+  { value: 'sata', label: 'SATA' },
+  { value: 'ide', label: 'IDE' },
+]
 const CACHE_OPTIONS = [
   { value: 'none', label: 'None (Direct I/O)' },
   { value: 'writeback', label: 'Write Back' },
@@ -104,6 +110,7 @@ const form = ref({
   // Media
   iso: '',
   drivers_iso: null,
+  cdrom_bus: 'auto',
   // Display
   video: 'virtio',
   // Firmware
@@ -552,6 +559,12 @@ function syncCustomScroll() {
             <label class="block text-xs text-gray-400 mb-1">SCSI Controller</label>
             <select v-model="form.scsihw" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
               <option v-for="s in SCSIHW_OPTIONS" :key="s.value" :value="s.value">{{ s.label }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">CD-ROM Bus</label>
+            <select v-model="form.cdrom_bus" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
+              <option v-for="c in CDROM_BUS_OPTIONS" :key="c.value" :value="c.value">{{ c.label }}</option>
             </select>
           </div>
           <div class="flex items-end gap-4 pb-0.5">

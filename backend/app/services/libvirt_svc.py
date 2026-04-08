@@ -396,31 +396,36 @@ class LibvirtService:
         emu = "/usr/bin/qemu-system-aarch64" if is_arm else "/usr/bin/qemu-system-x86_64"
         ET.SubElement(devices, "emulator").text = emu
 
+        # ── Target name allocator (sd* shared across scsi+sata, vd* for virtio, hd* for ide) ──
+        _tgt_counters = {"sd": 0, "vd": 0, "hd": 0}
+
+        def _next_target(bus: str) -> str:
+            prefix = "vd" if bus == "virtio" else ("hd" if bus == "ide" else "sd")
+            idx = _tgt_counters[prefix]
+            _tgt_counters[prefix] = idx + 1
+            return f"{prefix}{chr(ord('a') + idx)}"
+
+        # Resolve CDROM bus: "auto" → scsi on ARM, ide on x86; user can override
+        cdrom_bus = params.cdrom_bus
+        if cdrom_bus == "auto":
+            cdrom_bus = "scsi" if is_arm else "ide"
+
+        # Collect which bus types are actually used to create controllers
+        buses_used: set[str] = {disk_bus}
+        if params.iso:
+            buses_used.add(cdrom_bus)
+        if params.drivers_iso:
+            buses_used.add(cdrom_bus)
+
         # ── Controllers ──
-        # SCSI controller — needed for SCSI disks or SCSI CDROMs (ARM always uses SCSI CDROM)
         scsi_model = _SCSIHW_MODELS.get(scsihw, "virtio-scsi")
-        need_scsi = disk_bus == "scsi" or (is_arm and params.iso)
-        if need_scsi:
+        if "scsi" in buses_used:
             ET.SubElement(devices, "controller", type="scsi", model=scsi_model)
-
-        # USB controller (PVE: qemu-xhci for modern guests)
         ET.SubElement(devices, "controller", type="usb", model="qemu-xhci")
-
-        # SATA/AHCI controller for drivers ISO on ARM, or sata disk bus
-        needs_sata = (is_arm and params.drivers_iso) or disk_bus == "sata"
-        if needs_sata:
+        if "sata" in buses_used:
             ET.SubElement(devices, "controller", type="sata", index="0")
 
         # ── Primary disk ──
-        if disk_bus == "virtio":
-            disk_target = "vda"
-        elif disk_bus == "scsi":
-            disk_target = "sda"
-        elif disk_bus == "sata":
-            disk_target = "sda"
-        else:
-            disk_target = "hda"
-
         disk_el = ET.SubElement(devices, "disk", type="file", device="disk")
         drv_attrs = {"name": "qemu", "type": params.disk_format, "cache": cache}
         if disc == "on":
@@ -428,9 +433,9 @@ class LibvirtService:
             drv_attrs["detect_zeroes"] = "unmap"
         ET.SubElement(disk_el, "driver", **drv_attrs)
         ET.SubElement(disk_el, "source", file=disk_path)
-        ET.SubElement(disk_el, "target", dev=disk_target, bus=disk_bus)
+        ET.SubElement(disk_el, "target", dev=_next_target(disk_bus), bus=disk_bus)
 
-        # ── Boot ISO (SCSI on ARM, IDE on x86) ──
+        # ── Boot ISO ──
         if params.iso:
             iso_path = params.iso if params.iso.startswith("/") else os.path.join(
                 settings.iso_storage_path, params.iso,
@@ -438,14 +443,10 @@ class LibvirtService:
             cdrom_el = ET.SubElement(devices, "disk", type="file", device="cdrom")
             ET.SubElement(cdrom_el, "driver", name="qemu", type="raw")
             ET.SubElement(cdrom_el, "source", file=iso_path)
-            if is_arm:
-                cdrom_dev = "sdb" if disk_bus not in ("scsi",) else "sdb"
-                ET.SubElement(cdrom_el, "target", dev=cdrom_dev, bus="scsi")
-            else:
-                ET.SubElement(cdrom_el, "target", dev="hda" if disk_bus != "ide" else "hdc", bus="ide")
+            ET.SubElement(cdrom_el, "target", dev=_next_target(cdrom_bus), bus=cdrom_bus)
             ET.SubElement(cdrom_el, "readonly")
 
-        # ── Drivers ISO (SATA/AHCI on ARM, IDE on x86) ──
+        # ── Drivers ISO (same bus as primary CDROM) ──
         if params.drivers_iso:
             drv_path = params.drivers_iso if params.drivers_iso.startswith("/") else os.path.join(
                 settings.iso_storage_path, params.drivers_iso,
@@ -453,11 +454,7 @@ class LibvirtService:
             drv_el = ET.SubElement(devices, "disk", type="file", device="cdrom")
             ET.SubElement(drv_el, "driver", name="qemu", type="raw")
             ET.SubElement(drv_el, "source", file=drv_path)
-            if is_arm:
-                ET.SubElement(drv_el, "target", dev="sda", bus="sata")
-            else:
-                drv_ide = "hdb" if disk_bus != "ide" else "hdd"
-                ET.SubElement(drv_el, "target", dev=drv_ide, bus="ide")
+            ET.SubElement(drv_el, "target", dev=_next_target(cdrom_bus), bus=cdrom_bus)
             ET.SubElement(drv_el, "readonly")
 
         # ── Network ──
