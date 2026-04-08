@@ -10,7 +10,55 @@
       - ovmf
       - libosinfo-bin
       - gir1.2-libosinfo-1.0
+      - seabios
+      - ipxe-qemu
+      - ipxe-qemu-256k-compat-efi-roms
+      - vgabios
+      - swtpm
+      - swtpm-tools
     state: present
+
+- name: Symlink seabios VGA BIOS ROMs into QEMU directory
+  ansible.builtin.file:
+    src: "/usr/share/seabios/{{ item }}"
+    dest: "/usr/share/qemu/{{ item }}"
+    state: link
+    force: false
+  loop:
+    - vgabios.bin
+    - vgabios-stdvga.bin
+    - vgabios-cirrus.bin
+    - vgabios-qxl.bin
+    - vgabios-vmware.bin
+    - vgabios-ramfb.bin
+    - vgabios-bochs-display.bin
+    - vgabios-ati.bin
+    - vgabios-virtio.bin
+    - vgabios-isavga.bin
+  ignore_errors: true
+
+- name: Symlink seabios BIOS files into QEMU directory
+  ansible.builtin.file:
+    src: "/usr/share/seabios/{{ item }}"
+    dest: "/usr/share/qemu/{{ item }}"
+    state: link
+    force: false
+  loop:
+    - bios.bin
+    - bios-256k.bin
+    - bios-microvm.bin
+  ignore_errors: true
+
+- name: Symlink iPXE ROMs into QEMU directory
+  ansible.builtin.shell: |
+    for f in /usr/lib/ipxe/qemu/*.rom; do
+      name=$(basename "$f")
+      target="/usr/share/qemu/$name"
+      [ ! -e "$target" ] && ln -s "$f" "$target" || true
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
 
 - name: Add user to libvirt and kvm groups
   ansible.builtin.user:

@@ -7,11 +7,54 @@ import { highlightXml } from '../composables/useXmlHighlight'
 const router = useRouter()
 const { get, post } = useApi()
 
-const MEMORY_PRESETS = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
-const DISK_BUS_OPTIONS = ['virtio', 'scsi']
-const NIC_MODEL_OPTIONS = ['virtio', 'e1000e', 'e1000', 'rtl8139']
-const VIDEO_OPTIONS = ['virtio', 'qxl', 'vga', 'none']
-const CPU_OPTIONS = ['host-passthrough', 'host-model', 'max']
+// ── Option lists (aligned with Proxmox VE) ──────────────────────────────
+const MEMORY_PRESETS = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+const DISK_BUS_OPTIONS = ['virtio', 'scsi', 'sata', 'ide']
+const SCSIHW_OPTIONS = [
+  { value: 'virtio-scsi-pci', label: 'VirtIO SCSI' },
+  { value: 'lsi', label: 'LSI 53C895A' },
+  { value: 'megasas', label: 'MegaRAID SAS' },
+  { value: 'pvscsi', label: 'VMware PVSCSI' },
+]
+const NIC_MODEL_OPTIONS = ['virtio', 'e1000e', 'e1000', 'vmxnet3', 'rtl8139']
+const VIDEO_OPTIONS = [
+  { value: 'virtio', label: 'VirtIO GPU' },
+  { value: 'std', label: 'Standard VGA' },
+  { value: 'qxl', label: 'QXL (SPICE)' },
+  { value: 'cirrus', label: 'Cirrus' },
+  { value: 'vmware', label: 'VMware SVGA' },
+  { value: 'none', label: 'None (serial)' },
+]
+const CPU_OPTIONS_ARM = [
+  { value: 'host-passthrough', label: 'host (passthrough)' },
+  { value: 'max', label: 'max' },
+  { value: 'neoverse-n1', label: 'Neoverse N1' },
+  { value: 'neoverse-n2', label: 'Neoverse N2' },
+  { value: 'neoverse-v1', label: 'Neoverse V1' },
+  { value: 'cortex-a76', label: 'Cortex-A76' },
+  { value: 'cortex-a72', label: 'Cortex-A72' },
+  { value: 'cortex-a57', label: 'Cortex-A57' },
+]
+const CPU_OPTIONS_X86 = [
+  { value: 'host-passthrough', label: 'host (passthrough)' },
+  { value: 'host-model', label: 'host-model' },
+  { value: 'max', label: 'max' },
+  { value: 'x86-64-v3', label: 'x86-64-v3' },
+  { value: 'x86-64-v2-AES', label: 'x86-64-v2-AES' },
+  { value: 'kvm64', label: 'kvm64' },
+  { value: 'qemu64', label: 'qemu64' },
+]
+const CACHE_OPTIONS = [
+  { value: 'none', label: 'None (Direct I/O)' },
+  { value: 'writeback', label: 'Write Back' },
+  { value: 'writethrough', label: 'Write Through' },
+  { value: 'directsync', label: 'Direct Sync' },
+  { value: 'unsafe', label: 'Unsafe' },
+]
+const BIOS_OPTIONS = [
+  { value: 'uefi', label: 'OVMF (UEFI)' },
+  { value: 'bios', label: 'SeaBIOS' },
+]
 
 const nodes = ref([])
 const isos = ref([])
@@ -39,24 +82,46 @@ const attachVirtioWin = ref(false)
 const form = ref({
   name: '',
   node: '',
-  vcpus: 4,
+  // CPU (PVE-style: sockets × cores)
+  sockets: 1,
+  cores: 4,
+  cpu_type: 'host-passthrough',
+  // Memory
   memory_mb: 4096,
+  balloon: null,
+  // Disk
   disk_size_gb: 20,
   disk_format: 'qcow2',
   disk_bus: 'virtio',
+  cache: 'none',
+  discard: 'ignore',
+  io_thread: false,
+  scsihw: 'virtio-scsi-pci',
+  // Network
   nic_model: 'virtio',
-  iso: '',
-  drivers_iso: null,
   network: '',
   network_type: 'bridge',
-  os_variant: 'generic',
+  // Media
+  iso: '',
+  drivers_iso: null,
+  // Display
+  video: 'virtio',
+  // Firmware
   bios: 'uefi',
   machine_type: null,
   tpm: null,
   secure_boot: false,
-  video: 'virtio',
-  cpu_type: 'host-passthrough',
+  // OS
+  os_variant: 'generic',
+  // Guest features
+  agent: true,
+  tablet: true,
+  onboot: false,
 })
+
+const totalVcpus = computed(() => form.value.sockets * form.value.cores)
+const cpuOptions = computed(() => CPU_OPTIONS_ARM) // ARM-first, servers are aarch64
+const isWindows = computed(() => hwFamily.value === 'windows')
 
 const filteredVariants = computed(() => {
   const q = osSearch.value.toLowerCase()
@@ -131,8 +196,6 @@ onMounted(async () => {
   }
 })
 
-const isWindows = computed(() => hwFamily.value === 'windows')
-
 async function checkVirtioWin() {
   if (!form.value.node) return
   virtioWinLoading.value = true
@@ -162,13 +225,18 @@ async function selectOsVariant(variant) {
   osDropdownOpen.value = false
   osSearch.value = ''
   try {
-    const profile = await get(`/vms/hw-profile/?os_variant=${encodeURIComponent(variant.id)}`)
-    if (profile.disk_bus) form.value.disk_bus = profile.disk_bus
-    if (profile.nic_model) form.value.nic_model = profile.nic_model
-    if (profile.tpm !== undefined) form.value.tpm = profile.tpm || null
-    if (profile.secure_boot !== undefined) form.value.secure_boot = !!profile.secure_boot
-    hwFamily.value = profile.family || ''
-    if (profile.family === 'windows') {
+    const p = await get(`/vms/hw-profile/?os_variant=${encodeURIComponent(variant.id)}`)
+    if (p.disk_bus) form.value.disk_bus = p.disk_bus
+    if (p.nic_model) form.value.nic_model = p.nic_model
+    if (p.tpm !== undefined) form.value.tpm = p.tpm || null
+    if (p.secure_boot !== undefined) form.value.secure_boot = !!p.secure_boot
+    if (p.video) form.value.video = p.video
+    if (p.scsihw) form.value.scsihw = p.scsihw
+    if (p.cache) form.value.cache = p.cache
+    if (p.discard) form.value.discard = p.discard
+    if (p.balloon !== undefined) form.value.balloon = p.balloon
+    hwFamily.value = p.family || ''
+    if (p.family === 'windows') {
       checkVirtioWin()
     } else {
       attachVirtioWin.value = false
@@ -271,108 +339,38 @@ function syncCustomScroll() {
     </div>
 
     <form @submit.prevent="create" class="space-y-5">
-      <!-- Name -->
-      <div>
-        <label class="block text-sm font-medium text-gray-300 mb-1.5">VM Name</label>
-        <input
-          v-model="form.name"
-          required
-          placeholder="my-vm"
-          class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50 placeholder-gray-500"
-        />
-      </div>
-
-      <!-- Node -->
-      <div>
-        <label class="block text-sm font-medium text-gray-300 mb-1.5">Node</label>
-        <div class="flex gap-2">
-          <button
-            v-for="n in nodes"
-            :key="n"
-            type="button"
-            @click="form.node = n"
-            class="flex-1 px-4 py-2.5 text-sm rounded-lg border transition-colors font-medium"
-            :class="form.node === n
-              ? 'bg-nvidia/10 text-nvidia border-nvidia/30'
-              : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'"
-          >
-            {{ n }}
-          </button>
-        </div>
-      </div>
-
-      <!-- vCPUs & Memory -->
+      <!-- ═══ General ═══ -->
       <div class="grid grid-cols-2 gap-4">
         <div>
-          <label class="block text-sm font-medium text-gray-300 mb-1.5">vCPUs</label>
+          <label class="block text-sm font-medium text-gray-300 mb-1.5">VM Name</label>
           <input
-            v-model.number="form.vcpus"
-            type="number"
-            min="1"
-            max="72"
-            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50"
-          />
-          <p class="text-xs text-gray-500 mt-1">Grace CPU: up to 72 cores</p>
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-gray-300 mb-1.5">Memory (MB)</label>
-          <input
-            v-model.number="form.memory_mb"
-            type="number"
-            min="256"
-            step="256"
-            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50"
-          />
-          <div class="flex flex-wrap gap-1.5 mt-2">
-            <button
-              v-for="preset in MEMORY_PRESETS"
-              :key="preset"
-              type="button"
-              @click="setMemoryPreset(preset)"
-              class="px-2 py-0.5 text-xs rounded border transition-colors"
-              :class="form.memory_mb === preset
-                ? 'bg-nvidia/10 text-nvidia border-nvidia/30'
-                : 'bg-gray-800 text-gray-500 border-gray-600 hover:bg-gray-700 hover:text-gray-300'"
-            >
-              {{ preset >= 1024 ? `${preset / 1024}G` : `${preset}M` }}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Disk -->
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-300 mb-1.5">Disk Size (GB)</label>
-          <input
-            v-model.number="form.disk_size_gb"
-            type="number"
-            min="1"
-            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50"
+            v-model="form.name"
+            required
+            placeholder="my-vm"
+            class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50 placeholder-gray-500"
           />
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-300 mb-1.5">Disk Format</label>
+          <label class="block text-sm font-medium text-gray-300 mb-1.5">Node</label>
           <div class="flex gap-2">
             <button
-              v-for="fmt in ['qcow2', 'raw']"
-              :key="fmt"
+              v-for="n in nodes"
+              :key="n"
               type="button"
-              @click="form.disk_format = fmt"
-              class="flex-1 px-3 py-2.5 text-sm rounded-lg border transition-colors"
-              :class="form.disk_format === fmt
+              @click="form.node = n"
+              class="flex-1 px-4 py-2.5 text-sm rounded-lg border transition-colors font-medium"
+              :class="form.node === n
                 ? 'bg-nvidia/10 text-nvidia border-nvidia/30'
                 : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'"
             >
-              {{ fmt }}
+              {{ n }}
             </button>
           </div>
         </div>
       </div>
 
-      <!-- OS Variant & Network -->
+      <!-- ═══ OS Type ═══ -->
       <div class="grid grid-cols-2 gap-4">
-        <!-- OS Variant -->
         <div class="relative">
           <label class="block text-sm font-medium text-gray-300 mb-1.5">OS Type</label>
           <button
@@ -412,7 +410,6 @@ function syncCustomScroll() {
           </div>
           <p v-if="osVariantsLoading" class="text-xs text-gray-500 mt-1">Loading...</p>
         </div>
-
         <!-- Network Bridge -->
         <div>
           <label class="block text-sm font-medium text-gray-300 mb-1.5">Network</label>
@@ -432,16 +429,150 @@ function syncCustomScroll() {
             class="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/50 placeholder-gray-500"
           />
           <p v-if="bridgesLoading" class="text-xs text-gray-500 mt-1">Loading bridges...</p>
-          <div v-else-if="!bridges.length" class="mt-1.5 p-2 rounded bg-amber-500/10 border border-amber-500/20">
-            <p class="text-xs text-amber-400">No bridges detected. Run: <code class="text-amber-300">sudo virsh net-start default</code></p>
+        </div>
+      </div>
+
+      <!-- ═══ CPU ═══ -->
+      <div class="bg-gray-800/50 rounded-lg border border-gray-700 p-4">
+        <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">CPU</h3>
+        <div class="grid grid-cols-3 gap-4">
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Sockets</label>
+            <input
+              v-model.number="form.sockets"
+              type="number"
+              min="1"
+              max="4"
+              class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50"
+            />
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Cores</label>
+            <input
+              v-model.number="form.cores"
+              type="number"
+              min="1"
+              max="72"
+              class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50"
+            />
+          </div>
+          <div class="flex items-end pb-0.5">
+            <span class="text-sm text-gray-300 font-medium">= {{ totalVcpus }} vCPUs</span>
+          </div>
+        </div>
+        <div class="mt-3">
+          <label class="block text-xs text-gray-400 mb-1">Type</label>
+          <select v-model="form.cpu_type" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
+            <option v-for="c in cpuOptions" :key="c.value" :value="c.value">{{ c.label }}</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- ═══ Memory ═══ -->
+      <div class="bg-gray-800/50 rounded-lg border border-gray-700 p-4">
+        <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Memory</h3>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">RAM (MiB)</label>
+            <input
+              v-model.number="form.memory_mb"
+              type="number"
+              min="64"
+              step="256"
+              class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50"
+            />
+          </div>
+          <div class="flex items-end gap-2 pb-0.5">
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" :checked="form.balloon !== 0" @change="form.balloon = $event.target.checked ? null : 0"
+                class="rounded border-gray-600 bg-gray-800 text-nvidia focus:ring-nvidia/50" />
+              <span class="text-xs text-gray-400">Ballooning</span>
+            </label>
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-1.5 mt-2">
+          <button
+            v-for="preset in MEMORY_PRESETS"
+            :key="preset"
+            type="button"
+            @click="setMemoryPreset(preset)"
+            class="px-2 py-0.5 text-xs rounded border transition-colors"
+            :class="form.memory_mb === preset
+              ? 'bg-nvidia/10 text-nvidia border-nvidia/30'
+              : 'bg-gray-800 text-gray-500 border-gray-600 hover:bg-gray-700 hover:text-gray-300'"
+          >
+            {{ preset >= 1024 ? `${preset / 1024}G` : `${preset}M` }}
+          </button>
+        </div>
+      </div>
+
+      <!-- ═══ Disk ═══ -->
+      <div class="bg-gray-800/50 rounded-lg border border-gray-700 p-4">
+        <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Hard Disk</h3>
+        <div class="grid grid-cols-3 gap-4">
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Size (GB)</label>
+            <input
+              v-model.number="form.disk_size_gb"
+              type="number"
+              min="1"
+              class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50"
+            />
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Format</label>
+            <div class="flex gap-1.5">
+              <button
+                v-for="fmt in ['qcow2', 'raw']"
+                :key="fmt"
+                type="button"
+                @click="form.disk_format = fmt"
+                class="flex-1 px-2 py-2 text-xs rounded-lg border transition-colors"
+                :class="form.disk_format === fmt
+                  ? 'bg-nvidia/10 text-nvidia border-nvidia/30'
+                  : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'"
+              >{{ fmt }}</button>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Bus</label>
+            <select v-model="form.disk_bus" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-2 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
+              <option v-for="bus in DISK_BUS_OPTIONS" :key="bus" :value="bus">{{ bus }}</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid grid-cols-3 gap-4 mt-3">
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Cache</label>
+            <select v-model="form.cache" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
+              <option v-for="c in CACHE_OPTIONS" :key="c.value" :value="c.value">{{ c.label }}</option>
+            </select>
+          </div>
+          <div v-if="form.disk_bus === 'scsi'" >
+            <label class="block text-xs text-gray-400 mb-1">SCSI Controller</label>
+            <select v-model="form.scsihw" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
+              <option v-for="s in SCSIHW_OPTIONS" :key="s.value" :value="s.value">{{ s.label }}</option>
+            </select>
+          </div>
+          <div class="flex items-end gap-4 pb-0.5">
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" :checked="form.discard === 'on'" @change="form.discard = $event.target.checked ? 'on' : 'ignore'"
+                class="rounded border-gray-600 bg-gray-800 text-nvidia focus:ring-nvidia/50" />
+              <span class="text-xs text-gray-400">Discard (TRIM)</span>
+            </label>
+            <label v-if="form.disk_bus === 'scsi' || form.disk_bus === 'virtio'" class="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" v-model="form.io_thread"
+                class="rounded border-gray-600 bg-gray-800 text-nvidia focus:ring-nvidia/50" />
+              <span class="text-xs text-gray-400">IO Thread</span>
+            </label>
           </div>
         </div>
       </div>
 
-      <!-- Hardware Profile -->
+      <!-- ═══ Hardware / System ═══ -->
       <div class="bg-gray-800/50 rounded-lg border border-gray-700 p-4">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Hardware Profile</h3>
+          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide">System</h3>
           <span v-if="hwFamily" class="text-xs px-2 py-0.5 rounded border"
             :class="hwFamily === 'windows'
               ? 'bg-blue-500/15 text-blue-400 border-blue-500/30'
@@ -452,37 +583,27 @@ function syncCustomScroll() {
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div>
-            <label class="block text-xs text-gray-400 mb-1">Disk Bus</label>
-            <div class="flex gap-1.5">
-              <button
-                v-for="bus in DISK_BUS_OPTIONS"
-                :key="bus"
-                type="button"
-                @click="form.disk_bus = bus"
-                class="flex-1 px-2 py-1.5 text-xs rounded-lg border transition-colors"
-                :class="form.disk_bus === bus
-                  ? 'bg-nvidia/10 text-nvidia border-nvidia/30'
-                  : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'"
-              >{{ bus }}</button>
-            </div>
-          </div>
-          <div>
             <label class="block text-xs text-gray-400 mb-1">NIC Model</label>
-            <div class="flex gap-1.5">
+            <div class="flex gap-1.5 flex-wrap">
               <button
                 v-for="nic in NIC_MODEL_OPTIONS"
                 :key="nic"
                 type="button"
                 @click="form.nic_model = nic"
-                class="flex-1 px-2 py-1.5 text-xs rounded-lg border transition-colors"
+                class="px-2 py-1.5 text-xs rounded-lg border transition-colors"
                 :class="form.nic_model === nic
                   ? 'bg-nvidia/10 text-nvidia border-nvidia/30'
                   : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'"
               >{{ nic }}</button>
             </div>
           </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Display</label>
+            <select v-model="form.video" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
+              <option v-for="v in VIDEO_OPTIONS" :key="v.value" :value="v.value">{{ v.label }}</option>
+            </select>
+          </div>
         </div>
-        <p v-if="hwFamily === 'windows'" class="text-xs text-amber-400/80 mt-2">Windows: e1000e NIC recommended. TPM enabled for Win11.</p>
 
         <!-- Advanced toggle -->
         <button
@@ -493,30 +614,15 @@ function syncCustomScroll() {
           <svg class="w-3 h-3 transition-transform" :class="showAdvanced ? 'rotate-90' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
           </svg>
-          Advanced hardware options
+          Advanced options
         </button>
 
         <div v-if="showAdvanced" class="mt-3 pt-3 border-t border-gray-700 space-y-3">
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="block text-xs text-gray-400 mb-1">Video</label>
-              <select v-model="form.video" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
-                <option v-for="v in VIDEO_OPTIONS" :key="v" :value="v">{{ v }}</option>
-              </select>
-            </div>
-            <div>
-              <label class="block text-xs text-gray-400 mb-1">CPU Type</label>
-              <select v-model="form.cpu_type" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
-                <option v-for="c in CPU_OPTIONS" :key="c" :value="c">{{ c }}</option>
-              </select>
-            </div>
-          </div>
           <div class="grid grid-cols-3 gap-4">
             <div>
               <label class="block text-xs text-gray-400 mb-1">BIOS</label>
               <select v-model="form.bios" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-xs text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50">
-                <option value="uefi">UEFI (required on ARM)</option>
-                <option value="bios">SeaBIOS (x86 only)</option>
+                <option v-for="b in BIOS_OPTIONS" :key="b.value" :value="b.value">{{ b.label }}</option>
               </select>
             </div>
             <label class="flex items-center gap-2 cursor-pointer self-end pb-1">
@@ -530,10 +636,29 @@ function syncCustomScroll() {
               <span class="text-xs text-gray-400">Secure Boot</span>
             </label>
           </div>
+          <div class="grid grid-cols-3 gap-4">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" v-model="form.agent"
+                class="rounded border-gray-600 bg-gray-800 text-nvidia focus:ring-nvidia/50" />
+              <span class="text-xs text-gray-400">QEMU Agent</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" v-model="form.tablet"
+                class="rounded border-gray-600 bg-gray-800 text-nvidia focus:ring-nvidia/50" />
+              <span class="text-xs text-gray-400">USB Tablet</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" v-model="form.onboot"
+                class="rounded border-gray-600 bg-gray-800 text-nvidia focus:ring-nvidia/50" />
+              <span class="text-xs text-gray-400">Start on Boot</span>
+            </label>
+          </div>
         </div>
+
+        <p v-if="isWindows" class="text-xs text-amber-400/80 mt-3">Windows: Hyper-V enlightenments enabled, clock set to localtime. Win11 requires TPM + Secure Boot.</p>
       </div>
 
-      <!-- ISO -->
+      <!-- ═══ ISO ═══ -->
       <div>
         <label class="block text-sm font-medium text-gray-300 mb-1.5">
           Boot ISO
@@ -554,7 +679,7 @@ function syncCustomScroll() {
         </p>
       </div>
 
-      <!-- VirtIO Drivers for Windows -->
+      <!-- ═══ VirtIO Drivers for Windows ═══ -->
       <div v-if="isWindows" class="bg-blue-500/5 rounded-lg border border-blue-500/20 p-4">
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-2">
@@ -614,7 +739,7 @@ function syncCustomScroll() {
         </div>
       </div>
 
-      <!-- Summary -->
+      <!-- ═══ Summary ═══ -->
       <div class="bg-gray-800/50 rounded-lg border border-gray-700 p-4">
         <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Summary</h3>
         <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
@@ -622,24 +747,30 @@ function syncCustomScroll() {
           <span class="text-gray-200">{{ form.name || '—' }}</span>
           <span class="text-gray-500">Node:</span>
           <span class="text-gray-200">{{ form.node }}</span>
-          <span class="text-gray-500">CPU / RAM:</span>
-          <span class="text-gray-200">{{ form.vcpus }} vCPUs / {{ form.memory_mb >= 1024 ? `${(form.memory_mb / 1024).toFixed(1)} GB` : `${form.memory_mb} MB` }}</span>
+          <span class="text-gray-500">CPU:</span>
+          <span class="text-gray-200">{{ form.sockets }}S × {{ form.cores }}C = {{ totalVcpus }} vCPUs ({{ form.cpu_type }})</span>
+          <span class="text-gray-500">Memory:</span>
+          <span class="text-gray-200">{{ form.memory_mb >= 1024 ? `${(form.memory_mb / 1024).toFixed(1)} GiB` : `${form.memory_mb} MiB` }}{{ form.balloon === 0 ? ' (no balloon)' : '' }}</span>
           <span class="text-gray-500">Disk:</span>
-          <span class="text-gray-200">{{ form.disk_size_gb }} GB ({{ form.disk_format }}, {{ form.disk_bus }})</span>
+          <span class="text-gray-200">{{ form.disk_size_gb }} GB {{ form.disk_format }}, {{ form.disk_bus }}{{ form.disk_bus === 'scsi' ? ` (${form.scsihw})` : '' }}, cache={{ form.cache }}{{ form.discard === 'on' ? ', discard' : '' }}</span>
+          <span class="text-gray-500">Network:</span>
+          <span class="text-gray-200">{{ form.network || '—' }} ({{ form.nic_model }})</span>
+          <span class="text-gray-500">Display:</span>
+          <span class="text-gray-200">{{ VIDEO_OPTIONS.find(v => v.value === form.video)?.label || form.video }}</span>
           <span class="text-gray-500">ISO:</span>
           <span class="text-gray-200">{{ form.iso ? isos.find(i => i.path === form.iso)?.name || form.iso : 'None' }}</span>
           <template v-if="isWindows && attachVirtioWin && virtioWin.path">
             <span class="text-gray-500">Drivers:</span>
             <span class="text-blue-300">virtio-win.iso</span>
           </template>
-          <span class="text-gray-500">Network:</span>
-          <span class="text-gray-200">{{ form.network || '—' }} ({{ form.nic_model }})</span>
           <span class="text-gray-500">OS:</span>
           <span class="text-gray-200">{{ selectedOsLabel() }}</span>
+          <span class="text-gray-500">BIOS:</span>
+          <span class="text-gray-200">{{ form.bios === 'uefi' ? 'OVMF (UEFI)' : 'SeaBIOS' }}{{ form.tpm ? ' + TPM 2.0' : '' }}{{ form.secure_boot ? ' + Secure Boot' : '' }}</span>
         </div>
       </div>
 
-      <!-- XML Preview -->
+      <!-- ═══ XML Preview ═══ -->
       <div class="bg-gray-800/50 rounded-lg border border-gray-700 p-4">
         <div class="flex items-center justify-between mb-2">
           <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Domain XML Preview</h3>
@@ -678,7 +809,7 @@ function syncCustomScroll() {
         <p v-else class="text-xs text-gray-500 mt-1">Fill in the form and click "Generate Preview" to see the libvirt XML</p>
       </div>
 
-      <!-- Submit -->
+      <!-- ═══ Submit ═══ -->
       <div class="flex items-center gap-3 pt-2">
         <button
           type="submit"

@@ -3,25 +3,68 @@ from pydantic import BaseModel
 
 class VMCreate(BaseModel):
     name: str
-    vcpus: int = 4
+
+    # ── CPU (PVE-style: sockets × cores) ──
+    sockets: int = 1
+    cores: int = 4
+    vcpus: int | None = None  # legacy compat — overrides sockets*cores
+    cpu_type: str = "host-passthrough"
+    numa: bool = False
+
+    # ── Memory ──
     memory_mb: int = 4096
+    balloon: int | None = None  # 0 = disabled, None = same as memory_mb
+
+    # ── Disk ──
     disk_size_gb: int = 20
     disk_format: str = "qcow2"
-    disk_bus: str = "virtio"
+    disk_bus: str = "virtio"  # virtio | scsi | sata | ide
+    cache: str = "none"  # none | writeback | writethrough | directsync | unsafe
+    discard: str = "ignore"  # ignore | on
+    io_thread: bool = False
+    ssd_emulation: bool = False
+    scsihw: str = "virtio-scsi-pci"  # virtio-scsi-pci | lsi | megasas | pvscsi
+
+    # ── Network ──
     nic_model: str = "virtio"
-    iso: str | None = None
-    drivers_iso: str | None = None
     network: str = "default"
     network_type: str = "bridge"
-    os_variant: str = "generic"
-    node: str = "spark-1"
-    bios: str = "uefi"
-    machine_type: str | None = None
+
+    # ── Media ──
+    iso: str | None = None
+    drivers_iso: str | None = None
+
+    # ── Display ──
+    video: str = "virtio"  # virtio | std | qxl | cirrus | vmware | virtio-gl | none
+
+    # ── Firmware / Machine ──
+    bios: str = "uefi"  # uefi/ovmf | bios/seabios
+    machine_type: str | None = None  # auto | pc | q35 | virt | virt-X.Y
     tpm: bool | None = None
     secure_boot: bool = False
-    video: str = "virtio"
-    cpu_type: str = "host-passthrough"
+
+    # ── OS ──
+    os_variant: str = "generic"
+
+    # ── Guest features ──
+    agent: bool = True
+    tablet: bool = True
+    onboot: bool = False
+
+    # ── Meta ──
+    node: str = "spark-1"
     custom_xml: str | None = None
+
+    def get_total_vcpus(self) -> int:
+        if self.vcpus is not None:
+            return self.vcpus
+        return self.sockets * self.cores
+
+    def get_topology(self) -> tuple[int, int]:
+        """Return (sockets, cores_per_socket)."""
+        if self.vcpus is not None:
+            return (self.sockets, self.vcpus // self.sockets)
+        return (self.sockets, self.cores)
 
 
 class VMInfo(BaseModel):

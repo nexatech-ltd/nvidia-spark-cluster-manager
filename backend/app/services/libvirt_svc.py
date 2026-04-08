@@ -24,21 +24,46 @@ _STATE_MAP = {
     libvirt.VIR_DOMAIN_PMSUSPENDED: "pmsuspended",
 }
 
-# ── Static OS type catalogue (Proxmox-style) ────────────────────────────
+# ── Static OS type catalogue (aligned with Proxmox VE) ──────────────────
 
 _FAMILY_DEFAULTS = {
-    "windows": {"disk_bus": "virtio", "nic_model": "e1000e", "tpm": False, "video": "virtio", "secure_boot": False},
-    "linux":   {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False, "video": "virtio", "secure_boot": False},
-    "bsd":     {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False, "video": "virtio", "secure_boot": False},
-    "generic": {"disk_bus": "virtio", "nic_model": "virtio", "tpm": False, "video": "virtio", "secure_boot": False},
+    "windows": {
+        "disk_bus": "virtio", "nic_model": "e1000e", "tpm": False,
+        "video": "std", "secure_boot": False,
+        "scsihw": "virtio-scsi-pci", "cache": "writeback",
+        "discard": "on", "balloon": 0,
+    },
+    "linux": {
+        "disk_bus": "virtio", "nic_model": "virtio", "tpm": False,
+        "video": "virtio", "secure_boot": False,
+        "scsihw": "virtio-scsi-pci", "cache": "none",
+        "discard": "on", "balloon": None,
+    },
+    "bsd": {
+        "disk_bus": "virtio", "nic_model": "virtio", "tpm": False,
+        "video": "virtio", "secure_boot": False,
+        "scsihw": "virtio-scsi-pci", "cache": "none",
+        "discard": "on", "balloon": None,
+    },
+    "generic": {
+        "disk_bus": "virtio", "nic_model": "virtio", "tpm": False,
+        "video": "virtio", "secure_boot": False,
+        "scsihw": "virtio-scsi-pci", "cache": "none",
+        "discard": "ignore", "balloon": None,
+    },
 }
 
 OS_TYPES: dict[str, dict] = {
+    # Windows (PVE: win11, win10, win8, win7, wvista, w2k8, w2k3, wxp, w2k)
     "win11":          {"label": "Windows 11 / Server 2025",      "family": "windows", "tpm": True, "secure_boot": True},
     "win10":          {"label": "Windows 10 / Server 2016-2019", "family": "windows"},
     "win8":           {"label": "Windows 8.x / Server 2012",     "family": "windows"},
     "win7":           {"label": "Windows 7 / Server 2008 R2",    "family": "windows"},
-    "winxp":          {"label": "Windows XP / Server 2003",      "family": "windows"},
+    "wvista":         {"label": "Windows Vista / Server 2008",   "family": "windows"},
+    "w2k3":           {"label": "Windows Server 2003",           "family": "windows"},
+    "wxp":            {"label": "Windows XP",                    "family": "windows", "video": "cirrus"},
+    "w2k":            {"label": "Windows 2000",                  "family": "windows", "video": "cirrus"},
+    # Linux (PVE: l26, l24)
     "ubuntu24.04":    {"label": "Ubuntu 24.04 LTS",              "family": "linux"},
     "ubuntu22.04":    {"label": "Ubuntu 22.04 LTS",              "family": "linux"},
     "ubuntu20.04":    {"label": "Ubuntu 20.04 LTS",              "family": "linux"},
@@ -55,12 +80,36 @@ OS_TYPES: dict[str, dict] = {
     "archlinux":      {"label": "Arch Linux",                    "family": "linux"},
     "alpine":         {"label": "Alpine Linux",                  "family": "linux"},
     "nixos":          {"label": "NixOS",                         "family": "linux"},
+    # BSD
     "freebsd14":      {"label": "FreeBSD 14",                    "family": "bsd"},
     "freebsd13":      {"label": "FreeBSD 13",                    "family": "bsd"},
     "openbsd":        {"label": "OpenBSD",                       "family": "bsd"},
+    # Solaris
+    "solaris":        {"label": "Solaris / OpenIndiana",          "family": "generic"},
+    # Generic
     "generic":        {"label": "Generic OS",                    "family": "generic"},
     "other":          {"label": "Other / Unknown",               "family": "generic"},
 }
+
+# PVE-compatible Windows version mapping
+_WIN_VERSIONS = {
+    "wxp": 5, "w2k": 5, "w2k3": 5,
+    "wvista": 6, "w2k8": 6,
+    "win7": 7, "win8": 8, "win10": 10, "win11": 11,
+}
+
+# SCSI controller → libvirt model name
+_SCSIHW_MODELS = {
+    "virtio-scsi-pci": "virtio-scsi",
+    "lsi": "lsilogic",
+    "lsi53c810": "lsi53c810",
+    "megasas": "megasas",
+    "pvscsi": "vmpvscsi",
+}
+
+
+def _windows_version(os_variant: str) -> int:
+    return _WIN_VERSIONS.get(os_variant, 0)
 
 
 class LibvirtService:
@@ -137,7 +186,6 @@ class LibvirtService:
 
         boot_order = [el.get("dev") for el in root.findall(".//os/boot") if el.get("dev")]
 
-        # Parse vCPUs and memory from XML (robust for shutoff VMs)
         vcpus_el = root.find("vcpu")
         vcpus = int(vcpus_el.text) if vcpus_el is not None and vcpus_el.text else 0
         mem_el = root.find("memory")
@@ -210,13 +258,14 @@ class LibvirtService:
         result = dict(_FAMILY_DEFAULTS.get(family, _FAMILY_DEFAULTS["generic"]))
         result["family"] = family
         result["label"] = entry.get("label", os_variant)
-        for k in ("tpm", "disk_bus", "nic_model", "video", "secure_boot"):
+        for k in ("tpm", "disk_bus", "nic_model", "video", "secure_boot",
+                   "scsihw", "cache", "discard", "balloon"):
             if k in entry:
                 result[k] = entry[k]
         return result
 
     def get_hw_profile(self, os_variant: str) -> dict:
-        """Return recommended disk_bus, nic_model, tpm, family for a given OS."""
+        """Return recommended hardware params for a given OS."""
         return self.get_os_type_info(os_variant)
 
     def build_domain_xml(
@@ -225,50 +274,55 @@ class LibvirtService:
         arch: str = "aarch64",
         machine_type: str = "virt",
     ) -> str:
-        """Build complete libvirt domain XML (replaces virt-install)."""
+        """Build complete libvirt domain XML (PVE-aligned)."""
         is_arm = arch in ("aarch64", "arm64")
         os_info = self.get_os_type_info(params.os_variant)
         is_windows = os_info["family"] == "windows"
+        win_ver = _windows_version(params.os_variant)
 
+        # ── Resolve effective hardware params ──
         disk_bus = params.disk_bus or os_info.get("disk_bus", "virtio")
         nic_model = params.nic_model or os_info.get("nic_model", "virtio")
         video_model = params.video or os_info.get("video", "virtio")
         tpm_enabled = params.tpm if params.tpm is not None else os_info.get("tpm", False)
         sb_enabled = params.secure_boot or os_info.get("secure_boot", False)
+        scsihw = params.scsihw or os_info.get("scsihw", "virtio-scsi-pci")
+        cache = params.cache or os_info.get("cache", "none")
+        disc = params.discard or os_info.get("discard", "ignore")
+        balloon_size = params.balloon if params.balloon is not None else os_info.get("balloon")
 
-        if is_arm and disk_bus in ("sata", "ide"):
-            logger.warning("Overriding disk_bus=%s→virtio (ARM UEFI)", disk_bus)
+        if is_arm and disk_bus in ("ide",):
+            logger.warning("Overriding disk_bus=%s→virtio (ARM has no IDE)", disk_bus)
             disk_bus = "virtio"
+
+        # BIOS normalization (accept both PVE and legacy naming)
+        use_uefi = params.bios in ("uefi", "ovmf") or is_arm
 
         disk_path = os.path.join(
             settings.vm_storage_path, f"{params.name}.{params.disk_format}",
         )
 
+        # CPU topology
+        sockets, cores_per_socket = params.get_topology()
+        total_vcpus = params.get_total_vcpus()
+
         # ── Root ──
         domain = ET.Element("domain", type="kvm")
         ET.SubElement(domain, "name").text = params.name
         ET.SubElement(domain, "memory", unit="MiB").text = str(params.memory_mb)
-        ET.SubElement(domain, "currentMemory", unit="MiB").text = str(params.memory_mb)
-        ET.SubElement(domain, "vcpu", placement="static").text = str(params.vcpus)
+        cur_mem = params.memory_mb if balloon_size is None else (balloon_size or params.memory_mb)
+        ET.SubElement(domain, "currentMemory", unit="MiB").text = str(cur_mem)
+        ET.SubElement(domain, "vcpu", placement="static").text = str(total_vcpus)
 
         # ── OS / firmware ──
         os_el = ET.SubElement(domain, "os")
-        use_uefi = params.bios == "uefi" or is_arm
 
         if use_uefi and is_arm and sb_enabled:
-            # pflash with Microsoft pre-enrolled Secure Boot keys (Windows 11)
-            loader = ET.SubElement(
-                os_el, "loader",
-                readonly="yes", type="pflash",
-            )
+            loader = ET.SubElement(os_el, "loader", readonly="yes", type="pflash")
             loader.text = "/usr/share/AAVMF/AAVMF_CODE.ms.fd"
             ET.SubElement(os_el, "nvram", template="/usr/share/AAVMF/AAVMF_VARS.ms.fd")
         elif use_uefi and is_arm:
-            # pflash without Secure Boot (Linux / generic ARM)
-            loader = ET.SubElement(
-                os_el, "loader",
-                readonly="yes", type="pflash",
-            )
+            loader = ET.SubElement(os_el, "loader", readonly="yes", type="pflash")
             loader.text = "/usr/share/AAVMF/AAVMF_CODE.fd"
             ET.SubElement(os_el, "nvram", template="/usr/share/AAVMF/AAVMF_VARS.fd")
         elif use_uefi and sb_enabled and not is_arm:
@@ -289,21 +343,44 @@ class LibvirtService:
             ET.SubElement(os_el, "boot", dev="cdrom")
         ET.SubElement(os_el, "boot", dev="hd")
 
-        # ── Features ──
+        # ── Features (PVE-aligned) ──
         features = ET.SubElement(domain, "features")
         ET.SubElement(features, "acpi")
+        ET.SubElement(features, "apic")
         if is_arm:
             ET.SubElement(features, "gic", version="3")
 
-        # ── CPU ──
-        ET.SubElement(domain, "cpu", mode=params.cpu_type, check="none")
+        # Hyper-V enlightenments for Windows on x86 (PVE: all win* ostypes)
+        if is_windows and not is_arm:
+            hv = ET.SubElement(features, "hyperv", mode="custom")
+            ET.SubElement(hv, "relaxed", state="on")
+            ET.SubElement(hv, "vapic", state="on")
+            ET.SubElement(hv, "spinlocks", state="on", retries="8191")
+            ET.SubElement(hv, "vpindex", state="on")
+            ET.SubElement(hv, "runtime", state="on")
+            ET.SubElement(hv, "synic", state="on")
+            ET.SubElement(hv, "stimer", state="on")
+            ET.SubElement(hv, "reset", state="on")
+            ET.SubElement(hv, "frequencies", state="on")
+            ET.SubElement(hv, "reenlightenment", state="on")
+            ET.SubElement(hv, "tlbflush", state="on")
+            ET.SubElement(hv, "ipi", state="on")
 
-        # ── Clock ──
+        # ── CPU ──
+        cpu_el = ET.SubElement(domain, "cpu", mode=params.cpu_type, check="none")
+        ET.SubElement(cpu_el, "topology",
+                      sockets=str(sockets),
+                      cores=str(cores_per_socket),
+                      threads="1")
+
+        # ── Clock (PVE-aligned per ostype) ──
         if is_windows:
             clock = ET.SubElement(domain, "clock", offset="localtime")
             ET.SubElement(clock, "timer", name="rtc", tickpolicy="catchup")
             ET.SubElement(clock, "timer", name="pit", tickpolicy="delay")
             ET.SubElement(clock, "timer", name="hpet", present="no")
+            if not is_arm:
+                ET.SubElement(clock, "timer", name="hypervclock", present="yes")
         else:
             clock = ET.SubElement(domain, "clock", offset="utc")
             ET.SubElement(clock, "timer", name="rtc", tickpolicy="catchup")
@@ -319,20 +396,41 @@ class LibvirtService:
         emu = "/usr/bin/qemu-system-aarch64" if is_arm else "/usr/bin/qemu-system-x86_64"
         ET.SubElement(devices, "emulator").text = emu
 
-        # Controllers
-        ET.SubElement(devices, "controller", type="scsi", model="virtio-scsi")
+        # ── Controllers ──
+        # SCSI controller — needed for SCSI disks or SCSI CDROMs (ARM always uses SCSI CDROM)
+        scsi_model = _SCSIHW_MODELS.get(scsihw, "virtio-scsi")
+        need_scsi = disk_bus == "scsi" or (is_arm and params.iso)
+        if need_scsi:
+            ET.SubElement(devices, "controller", type="scsi", model=scsi_model)
+
+        # USB controller (PVE: qemu-xhci for modern guests)
         ET.SubElement(devices, "controller", type="usb", model="qemu-xhci")
-        if is_arm and params.drivers_iso:
+
+        # SATA/AHCI controller for drivers ISO on ARM, or sata disk bus
+        needs_sata = (is_arm and params.drivers_iso) or disk_bus == "sata"
+        if needs_sata:
             ET.SubElement(devices, "controller", type="sata", index="0")
 
-        # Primary disk
-        disk_target = "vda" if disk_bus == "virtio" else "sda"
+        # ── Primary disk ──
+        if disk_bus == "virtio":
+            disk_target = "vda"
+        elif disk_bus == "scsi":
+            disk_target = "sda"
+        elif disk_bus == "sata":
+            disk_target = "sda"
+        else:
+            disk_target = "hda"
+
         disk_el = ET.SubElement(devices, "disk", type="file", device="disk")
-        ET.SubElement(disk_el, "driver", name="qemu", type=params.disk_format, cache="writeback")
+        drv_attrs = {"name": "qemu", "type": params.disk_format, "cache": cache}
+        if disc == "on":
+            drv_attrs["discard"] = "unmap"
+            drv_attrs["detect_zeroes"] = "unmap"
+        ET.SubElement(disk_el, "driver", **drv_attrs)
         ET.SubElement(disk_el, "source", file=disk_path)
         ET.SubElement(disk_el, "target", dev=disk_target, bus=disk_bus)
 
-        # Boot ISO (SCSI on ARM, IDE on x86)
+        # ── Boot ISO (SCSI on ARM, IDE on x86) ──
         if params.iso:
             iso_path = params.iso if params.iso.startswith("/") else os.path.join(
                 settings.iso_storage_path, params.iso,
@@ -341,13 +439,13 @@ class LibvirtService:
             ET.SubElement(cdrom_el, "driver", name="qemu", type="raw")
             ET.SubElement(cdrom_el, "source", file=iso_path)
             if is_arm:
-                cdrom_dev = "sdb" if disk_bus != "scsi" else "sda"
+                cdrom_dev = "sdb" if disk_bus not in ("scsi",) else "sdb"
                 ET.SubElement(cdrom_el, "target", dev=cdrom_dev, bus="scsi")
             else:
-                ET.SubElement(cdrom_el, "target", dev="hda", bus="ide")
+                ET.SubElement(cdrom_el, "target", dev="hda" if disk_bus != "ide" else "hdc", bus="ide")
             ET.SubElement(cdrom_el, "readonly")
 
-        # Drivers ISO via SATA/AHCI — no boot order (data only, not bootable)
+        # ── Drivers ISO (SATA/AHCI on ARM, IDE on x86) ──
         if params.drivers_iso:
             drv_path = params.drivers_iso if params.drivers_iso.startswith("/") else os.path.join(
                 settings.iso_storage_path, params.drivers_iso,
@@ -358,10 +456,11 @@ class LibvirtService:
             if is_arm:
                 ET.SubElement(drv_el, "target", dev="sda", bus="sata")
             else:
-                ET.SubElement(drv_el, "target", dev="hdb", bus="ide")
+                drv_ide = "hdb" if disk_bus != "ide" else "hdd"
+                ET.SubElement(drv_el, "target", dev=drv_ide, bus="ide")
             ET.SubElement(drv_el, "readonly")
 
-        # Network
+        # ── Network ──
         if params.network_type == "network":
             iface_el = ET.SubElement(devices, "interface", type="network")
             ET.SubElement(iface_el, "source", network=params.network)
@@ -370,38 +469,58 @@ class LibvirtService:
             ET.SubElement(iface_el, "source", bridge=params.network)
         ET.SubElement(iface_el, "model", type=nic_model)
 
-        # Graphics
+        # ── Graphics ──
         gfx = ET.SubElement(devices, "graphics", type="vnc", port="-1", autoport="yes")
         gfx.set("listen", "0.0.0.0")
         ET.SubElement(gfx, "listen", type="address", address="0.0.0.0")
 
-        # Video — virtio-gpu-pci causes Windows ARM boot to hang;
-        # ramfb is the only working display for Windows on ARM.
+        # ── Video (PVE: std default for x86, virtio-gpu for ARM) ──
+        # Map PVE video names → libvirt model type names
+        _VIDEO_MAP = {
+            "std": "vga", "vmware": "vmvga",
+            "virtio": "virtio", "qxl": "qxl", "cirrus": "cirrus", "none": "none",
+        }
+        libvirt_video = _VIDEO_MAP.get(video_model, video_model)
+
         if is_windows and is_arm:
             vid = ET.SubElement(devices, "video")
             ET.SubElement(vid, "model", type="ramfb")
+        elif video_model == "none":
+            pass
+        elif video_model == "virtio-gl":
+            vid = ET.SubElement(devices, "video")
+            m = ET.SubElement(vid, "model", type="virtio", heads="1")
+            ET.SubElement(m, "acceleration", accel3d="yes")
         else:
             vid = ET.SubElement(devices, "video")
-            ET.SubElement(vid, "model", type=video_model, heads="1")
+            ET.SubElement(vid, "model", type=libvirt_video, heads="1")
 
-        # Console / serial
+        # ── Console / serial ──
         console = ET.SubElement(devices, "console", type="pty")
         ET.SubElement(console, "target", type="serial", port="0")
 
-        # Input devices
-        ET.SubElement(devices, "input", type="tablet", bus="usb")
+        # ── Input devices (PVE: tablet + keyboard for ARM) ──
+        if params.tablet:
+            ET.SubElement(devices, "input", type="tablet", bus="usb")
         if is_arm:
             ET.SubElement(devices, "input", type="keyboard", bus="usb")
 
-        # Guest agent channel
-        ch = ET.SubElement(devices, "channel", type="unix")
-        ET.SubElement(ch, "target", type="virtio", name="org.qemu.guest_agent.0")
+        # ── Guest agent channel ──
+        if params.agent:
+            ch = ET.SubElement(devices, "channel", type="unix")
+            ET.SubElement(ch, "target", type="virtio", name="org.qemu.guest_agent.0")
 
-        # RNG
+        # ── RNG ──
         rng = ET.SubElement(devices, "rng", model="virtio")
         ET.SubElement(rng, "backend", model="random").text = "/dev/urandom"
 
-        # TPM
+        # ── Balloon (PVE: disabled by default for Windows) ──
+        if balloon_size == 0:
+            balloon_el = ET.SubElement(devices, "memballoon", model="none")
+        else:
+            balloon_el = ET.SubElement(devices, "memballoon", model="virtio")
+
+        # ── TPM ──
         if tpm_enabled:
             tpm_model = "tpm-tis" if is_arm else "tpm-crb"
             tpm_el = ET.SubElement(devices, "tpm", model=tpm_model)
@@ -431,7 +550,6 @@ class LibvirtService:
         if action == "undefine":
             return self.delete_vm(name, node)
 
-        # Graceful shutdown: send ACPI signal, poll, fallback to destroy
         if action == "shutdown" and timeout > 0:
             try:
                 dom.shutdown()
@@ -736,7 +854,6 @@ class LibvirtService:
         return {"message": f"Disk '{disk_path}' detached from VM '{vm_name}'"}
 
     def _next_disk_target(self, vm_name: str, node: str) -> str:
-        """Find the next available vdX target for a VM."""
         try:
             info = self.get_vm(vm_name, node)
             used = {d.get("target", "") for d in info["disks"]}
