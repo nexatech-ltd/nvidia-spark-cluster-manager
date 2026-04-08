@@ -10,6 +10,7 @@ class VMCreate(BaseModel):
     disk_bus: str = "virtio"
     nic_model: str = "virtio"
     iso: str | None = None
+    drivers_iso: str | None = None
     network: str = "default"
     network_type: str = "bridge"
     os_variant: str = "generic"

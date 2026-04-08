@@ -31,6 +31,11 @@ const previewLoading = ref(false)
 const useCustomXml = ref(false)
 const customXml = ref('')
 
+const virtioWin = ref({ exists: false, path: null, local_size: 0, remote_size: 0, update_available: false })
+const virtioWinLoading = ref(false)
+const virtioWinDownloading = ref(false)
+const attachVirtioWin = ref(false)
+
 const form = ref({
   name: '',
   node: '',
@@ -41,6 +46,7 @@ const form = ref({
   disk_bus: 'virtio',
   nic_model: 'virtio',
   iso: '',
+  drivers_iso: null,
   network: '',
   network_type: 'bridge',
   os_variant: 'generic',
@@ -112,6 +118,10 @@ watch(() => form.value.network, (val) => {
   if (br) form.value.network_type = br.type || 'bridge'
 })
 
+watch(attachVirtioWin, (val) => {
+  form.value.drivers_iso = val && virtioWin.value.path ? virtioWin.value.path : null
+})
+
 onMounted(async () => {
   await fetchNodes()
   if (form.value.node) {
@@ -120,6 +130,32 @@ onMounted(async () => {
     fetchOsVariants()
   }
 })
+
+const isWindows = computed(() => hwFamily.value === 'windows')
+
+async function checkVirtioWin() {
+  if (!form.value.node) return
+  virtioWinLoading.value = true
+  try {
+    virtioWin.value = await get(`/vms/virtio-win/?node=${form.value.node}`)
+    if (virtioWin.value.exists) {
+      attachVirtioWin.value = true
+      form.value.drivers_iso = virtioWin.value.path
+    }
+  } catch { /* ignore */ }
+  virtioWinLoading.value = false
+}
+
+async function downloadVirtioWin() {
+  virtioWinDownloading.value = true
+  try {
+    const res = await post(`/vms/virtio-win/download?node=${form.value.node}`, {})
+    virtioWin.value = { exists: true, path: res.path, local_size: res.size, remote_size: res.size, update_available: false }
+    attachVirtioWin.value = true
+    form.value.drivers_iso = res.path
+  } catch { /* ignore */ }
+  virtioWinDownloading.value = false
+}
 
 async function selectOsVariant(variant) {
   form.value.os_variant = variant.id
@@ -132,6 +168,12 @@ async function selectOsVariant(variant) {
     if (profile.tpm !== undefined) form.value.tpm = profile.tpm || null
     if (profile.secure_boot !== undefined) form.value.secure_boot = !!profile.secure_boot
     hwFamily.value = profile.family || ''
+    if (profile.family === 'windows') {
+      checkVirtioWin()
+    } else {
+      attachVirtioWin.value = false
+      form.value.drivers_iso = null
+    }
   } catch { /* ignore */ }
 }
 
@@ -145,6 +187,7 @@ async function fetchPreview() {
   try {
     const payload = { ...form.value }
     if (!payload.iso) payload.iso = null
+    if (!payload.drivers_iso) payload.drivers_iso = null
     const res = await post('/vms/preview', payload)
     previewXml.value = res.xml || ''
     customXml.value = res.xml || ''
@@ -164,6 +207,7 @@ async function create() {
   try {
     const payload = { ...form.value }
     if (!payload.iso) payload.iso = null
+    if (!payload.drivers_iso) payload.drivers_iso = null
     if (useCustomXml.value && customXml.value.trim()) {
       payload.custom_xml = customXml.value.trim()
     }
@@ -510,6 +554,66 @@ function syncCustomScroll() {
         </p>
       </div>
 
+      <!-- VirtIO Drivers for Windows -->
+      <div v-if="isWindows" class="bg-blue-500/5 rounded-lg border border-blue-500/20 p-4">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+            </svg>
+            <h3 class="text-sm font-medium text-blue-300">VirtIO Drivers (virtio-win.iso)</h3>
+          </div>
+          <span v-if="virtioWinLoading" class="text-xs text-gray-500">Checking...</span>
+        </div>
+
+        <p class="text-xs text-gray-400 mb-3">
+          Contains VirtIO disk/network/GPU drivers and QEMU Guest Agent for Windows.
+          Required for VirtIO disk bus and optimal performance.
+        </p>
+
+        <div v-if="virtioWin.exists" class="space-y-2">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              v-model="attachVirtioWin"
+              class="rounded border-gray-600 bg-gray-800 text-nvidia focus:ring-nvidia/50"
+            />
+            <span class="text-sm text-gray-200">Attach as second CD-ROM</span>
+            <span class="text-xs text-gray-500">({{ formatBytes(virtioWin.local_size) }})</span>
+          </label>
+          <div v-if="virtioWin.update_available" class="flex items-center gap-2 pl-6">
+            <span class="text-xs text-amber-400">New version available ({{ formatBytes(virtioWin.remote_size) }})</span>
+            <button
+              type="button"
+              @click="downloadVirtioWin"
+              :disabled="virtioWinDownloading"
+              class="px-2 py-0.5 text-xs rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 transition-colors disabled:opacity-50"
+            >
+              {{ virtioWinDownloading ? 'Downloading...' : 'Update' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-else-if="!virtioWinLoading" class="flex items-center gap-3">
+          <span class="text-sm text-gray-400">Not found on {{ form.node }}</span>
+          <button
+            type="button"
+            @click="downloadVirtioWin"
+            :disabled="virtioWinDownloading"
+            class="px-3 py-1.5 text-xs rounded-lg bg-blue-500/15 text-blue-300 border border-blue-500/30 hover:bg-blue-500/25 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+          >
+            <svg v-if="!virtioWinDownloading" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            <svg v-else class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            {{ virtioWinDownloading ? 'Downloading (~600 MB)...' : 'Download virtio-win.iso' }}
+          </button>
+        </div>
+      </div>
+
       <!-- Summary -->
       <div class="bg-gray-800/50 rounded-lg border border-gray-700 p-4">
         <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Summary</h3>
@@ -524,6 +628,10 @@ function syncCustomScroll() {
           <span class="text-gray-200">{{ form.disk_size_gb }} GB ({{ form.disk_format }}, {{ form.disk_bus }})</span>
           <span class="text-gray-500">ISO:</span>
           <span class="text-gray-200">{{ form.iso ? isos.find(i => i.path === form.iso)?.name || form.iso : 'None' }}</span>
+          <template v-if="isWindows && attachVirtioWin && virtioWin.path">
+            <span class="text-gray-500">Drivers:</span>
+            <span class="text-blue-300">virtio-win.iso</span>
+          </template>
           <span class="text-gray-500">Network:</span>
           <span class="text-gray-200">{{ form.network || '—' }} ({{ form.nic_model }})</span>
           <span class="text-gray-500">OS:</span>

@@ -25,6 +25,9 @@ router = APIRouter()
 
 ALLOWED_ACTIONS = {"start", "shutdown", "reboot", "suspend", "resume", "destroy", "undefine"}
 
+VIRTIO_WIN_URL = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
+VIRTIO_WIN_FILENAME = "virtio-win.iso"
+
 
 # ── ISOs (must be before /{name} catch-all) ──────────────────────────────
 
@@ -68,6 +71,83 @@ async def upload_iso(file: UploadFile, node: str | None = Query(None)):
         )
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── VirtIO Windows drivers ISO ────────────────────────────────────────────
+
+
+@router.get("/virtio-win/")
+async def check_virtio_win(node: str = Query("spark-1")):
+    """Check if virtio-win ISO exists on the node and compare with upstream."""
+    host = node_service._host_for_node(node)
+    iso_dir = settings.iso_storage_path
+    local_path = f"{iso_dir}/{VIRTIO_WIN_FILENAME}"
+
+    rc, out, _ = await node_service.ssh_run(
+        host,
+        f"stat --printf='%s' {_shlex_quote(local_path)} 2>/dev/null && echo OK || echo MISSING",
+    )
+    local_size = 0
+    exists = "OK" in out
+    if exists:
+        try:
+            local_size = int(out.replace("OK", "").strip())
+        except ValueError:
+            local_size = 0
+
+    remote_size = 0
+    update_available = False
+    try:
+        rc_h, head_out, _ = await node_service.ssh_run(
+            host,
+            f"curl -sI -L --max-time 10 {_shlex_quote(VIRTIO_WIN_URL)}"
+            " | grep -i content-length | tail -1 | awk '{print $2}' | tr -d '\\r'",
+        )
+        if rc_h == 0 and head_out.strip():
+            remote_size = int(head_out.strip())
+            if exists and remote_size > 0 and remote_size != local_size:
+                update_available = True
+    except Exception:
+        pass
+
+    return {
+        "exists": exists,
+        "path": local_path if exists else None,
+        "local_size": local_size,
+        "remote_size": remote_size,
+        "update_available": update_available,
+        "url": VIRTIO_WIN_URL,
+    }
+
+
+@router.post("/virtio-win/download")
+async def download_virtio_win(node: str = Query("spark-1")):
+    """Download or update virtio-win ISO to the node's ISO directory."""
+    host = node_service._host_for_node(node)
+    iso_dir = settings.iso_storage_path
+    local_path = f"{iso_dir}/{VIRTIO_WIN_FILENAME}"
+
+    await node_service.ssh_run(host, f"sudo mkdir -p {_shlex_quote(iso_dir)}")
+
+    rc, stdout, stderr = await node_service.ssh_run(
+        host,
+        f"sudo curl -L --progress-bar -o {_shlex_quote(local_path)} {_shlex_quote(VIRTIO_WIN_URL)} 2>&1",
+        timeout=600,
+    )
+    if rc != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Download failed: {stderr.strip() or stdout.strip()}",
+        )
+    rc2, size_out, _ = await node_service.ssh_run(
+        host, f"stat --printf='%s' {_shlex_quote(local_path)} 2>/dev/null",
+    )
+    size = int(size_out.strip()) if rc2 == 0 and size_out.strip().isdigit() else 0
+    return {
+        "message": f"virtio-win.iso downloaded to {local_path}",
+        "path": local_path,
+        "size": size,
+    }
 
 
 # ── OS Types (must be before /{name} catch-all) ──────────────────────────

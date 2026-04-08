@@ -29,7 +29,9 @@ class NodeService:
             return settings.node2_ip
         return node
 
-    async def ssh_run(self, host: str, command: str) -> tuple[int, str, str]:
+    async def ssh_run(
+        self, host: str, command: str, *, timeout: int | None = None,
+    ) -> tuple[int, str, str]:
         try:
             async with asyncssh.connect(
                 host,
@@ -37,7 +39,7 @@ class NodeService:
                 known_hosts=None,
                 client_keys=[settings.ssh_key_path],
             ) as conn:
-                result = await conn.run(command, check=False)
+                result = await conn.run(command, check=False, timeout=timeout)
                 return (
                     result.exit_status or 0,
                     result.stdout or "",
