@@ -477,8 +477,8 @@ function syncCustomScroll() {
             <input
               v-model.number="form.memory_mb"
               type="number"
-              min="64"
-              step="256"
+              min="128"
+              step="128"
               class="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-nvidia/50"
             />
           </div>
