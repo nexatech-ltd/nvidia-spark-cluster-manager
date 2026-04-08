@@ -322,6 +322,8 @@ class LibvirtService:
         # Controllers
         ET.SubElement(devices, "controller", type="scsi", model="virtio-scsi")
         ET.SubElement(devices, "controller", type="usb", model="qemu-xhci")
+        if is_arm and params.drivers_iso:
+            ET.SubElement(devices, "controller", type="sata", index="0")
 
         # Primary disk
         disk_target = "vda" if disk_bus == "virtio" else "sda"
@@ -345,7 +347,7 @@ class LibvirtService:
                 ET.SubElement(cdrom_el, "target", dev="hda", bus="ide")
             ET.SubElement(cdrom_el, "readonly")
 
-        # Drivers ISO via USB so WinPE can see it without VirtIO drivers
+        # Drivers ISO via SATA/AHCI (Windows has built-in AHCI drivers, not VirtIO SCSI)
         if params.drivers_iso:
             drv_path = params.drivers_iso if params.drivers_iso.startswith("/") else os.path.join(
                 settings.iso_storage_path, params.drivers_iso,
@@ -354,7 +356,7 @@ class LibvirtService:
             ET.SubElement(drv_el, "driver", name="qemu", type="raw")
             ET.SubElement(drv_el, "source", file=drv_path)
             if is_arm:
-                ET.SubElement(drv_el, "target", dev="sdc", bus="usb")
+                ET.SubElement(drv_el, "target", dev="sda", bus="sata")
             else:
                 ET.SubElement(drv_el, "target", dev="hdb", bus="ide")
             ET.SubElement(drv_el, "readonly")
